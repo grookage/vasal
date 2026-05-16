@@ -27,7 +27,7 @@ and self-upgrades with rollback. It ships as a single static binary (~5-10 MB).
 The full design is documented in 18 design decisions:
 
 ```
-docs/arch.md 
+notes/arch.md 
 ```
 
 ### Component Map

@@ -13,3 +13,5 @@ target
 
 docs/architecture.md
 docs/plan.md
+
+docs/**
