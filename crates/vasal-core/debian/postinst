@@ -1,0 +1,36 @@
+#!/bin/sh
+set -e
+
+# Create the vasal system user and group if they don't exist.
+if ! getent group vasal >/dev/null 2>&1; then
+    groupadd --system vasal
+fi
+
+if ! getent passwd vasal >/dev/null 2>&1; then
+    useradd --system \
+        --gid vasal \
+        --home-dir /var/lib/vasal \
+        --no-create-home \
+        --shell /usr/sbin/nologin \
+        --comment "Vasal host agent" \
+        vasal
+fi
+
+# Create runtime directories with correct ownership.
+install -d -m 0750 -o vasal -g vasal /var/lib/vasal
+install -d -m 0750 -o vasal -g vasal /run/vasal
+install -d -m 0750 -o vasal -g vasal /var/cache/vasal
+
+# Ensure config is readable by the vasal user but not world-readable
+# (may contain auth tokens after bootstrap).
+chown root:vasal /etc/vasal/config.toml
+chmod 0640 /etc/vasal/config.toml
+
+# Reload systemd so it picks up the new unit file.
+systemctl daemon-reload
+
+echo "vasal installed. To start:"
+echo "  1. Edit /etc/vasal/config.toml with your control plane endpoints"
+echo "  2. systemctl enable --now vasal"
+
+#DEBHELPER#

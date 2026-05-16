@@ -1,0 +1,29 @@
+[Unit]
+Description=Vasal Host Agent
+Documentation=https://github.com/vasal-agent/vasal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vasal
+Group=vasal
+ExecStart=/usr/bin/vasal --config /etc/vasal/config.toml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/vasal /run/vasal
+
+# Logging goes to journald via tracing-subscriber
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vasal
+
+[Install]
+WantedBy=multi-user.target

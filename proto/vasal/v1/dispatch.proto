@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package vasal.v1;
+
+// The Vasal agent-to-CP dispatch service.
+//
+// The agent opens a bidirectional stream to the CP. The CP pushes tasks
+// (as JSON-encoded bytes) and the agent sends results back. This avoids
+// the need for per-field protobuf mirroring of the rich serde types in
+// vasal-protocol — the JSON contract is the source of truth.
+
+service AgentDispatch {
+  // Bidirectional streaming: CP sends work items, agent sends results.
+  rpc TaskStream(stream AgentMessage) returns (stream ControlPlaneMessage);
+}
+
+// Message sent from the agent to the CP.
+message AgentMessage {
+  oneof payload {
+    // JSON-encoded TaskResult.
+    bytes task_result = 1;
+    // JSON-encoded Heartbeat.
+    bytes heartbeat = 2;
+    // Agent is ready to receive tasks after connecting.
+    AgentHello hello = 3;
+  }
+}
+
+// Agent hello sent once after stream establishment.
+message AgentHello {
+  string agent_id = 1;
+  string agent_version = 2;
+}
+
+// Message sent from the CP to the agent.
+message ControlPlaneMessage {
+  oneof payload {
+    // JSON-encoded Task (single).
+    bytes task = 1;
+    // JSON-encoded TaskChain.
+    bytes task_chain = 2;
+    // Server acknowledgement of agent hello.
+    ServerAck ack = 3;
+  }
+}
+
+// Server acknowledgement after receiving AgentHello.
+message ServerAck {
+  bool accepted = 1;
+  string message = 2;
+}

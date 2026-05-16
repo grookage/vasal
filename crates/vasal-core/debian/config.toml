@@ -1,0 +1,49 @@
+# Vasal agent configuration.
+#
+# Hot-reloadable fields (applied on SIGHUP without restart):
+#   agent.log_level, shell.max_concurrent, heartbeat.interval_sec,
+#   units.health_check_interval_sec, audit.batch_size, audit.flush_interval_sec
+#
+# All other fields require a full restart to take effect.
+
+[agent]
+# Agent UUID — assigned after first registration with the control plane.
+# Uncomment and set after bootstrap:
+# id = "00000000-0000-0000-0000-000000000000"
+
+log_level = "info"
+data_dir  = "/var/lib/vasal"
+socket_dir = "/run/vasal"
+
+[transport]
+mode = "poll"
+
+[transport.poll]
+endpoint     = "https://cp.example.com/api/v1"
+interval_sec = 10
+
+# Uncomment to use gRPC streaming instead of HTTP polling:
+# [transport.grpc]
+# endpoint = "https://cp.example.com:9090"
+
+[heartbeat]
+endpoint     = "https://cp.example.com/api/v1/heartbeat"
+interval_sec = 10
+
+[audit]
+endpoint           = "https://cp.example.com/api/v1/audit"
+batch_size         = 50
+flush_interval_sec = 5
+
+[auth]
+provider   = "https://cp.example.com/v1/token"
+token_file = "/var/lib/vasal/token.json"
+
+[shell]
+max_concurrent     = 4
+default_timeout_ms = 300000
+working_dir        = "/tmp/vasal"
+
+[units]
+artifact_cache_dir       = "/var/cache/vasal"
+health_check_interval_sec = 30

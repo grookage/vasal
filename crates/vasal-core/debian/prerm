@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+# Stop the service before removing.
+if systemctl is-active --quiet vasal; then
+    systemctl stop vasal
+fi
+
+#DEBHELPER#

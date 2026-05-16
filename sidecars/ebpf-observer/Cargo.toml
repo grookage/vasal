@@ -1,0 +1,17 @@
+[package]
+name = "ebpf-observer"
+description = "Reference sidecar — kernel-level observation via eBPF (Linux only)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vasal-protocol = { workspace = true }
+vasal-sidecar-sdk = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
