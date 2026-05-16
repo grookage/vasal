@@ -24,11 +24,7 @@ and self-upgrades with rollback. It ships as a single static binary (~5-10 MB).
 
 ## Architecture
 
-The full design is documented in 18 design decisions:
-
-```
-notes/arch.md 
-```
+The full design is at notes/arch.md 
 
 ### Component Map
 
@@ -253,18 +249,6 @@ Credentials are resolved per-task, never cached, and discarded after use:
 - **Lazy** -- agent forwards the credential reference to the sidecar as-is
   for self-resolution.
 
-## Implementation Status
-
-| Phase | Scope                                    | Status   |
-|-------|------------------------------------------|----------|
-| 1     | Protocol types + SDK + echo-ctrl         | Complete |
-| 2     | Agent skeleton (CLI, config, state, signals) | Complete |
-| 3     | Task execution engine (shell, sidecar, chain, continuous) | Complete |
-| 4     | Transport + heartbeat + audit            | Complete |
-| 5     | Unit management (install, upgrade, health) + self-upgrade | Complete |
-| 6     | Auth + bootstrap                         | Complete |
-| 7     | Reference sidecars (sql-ctrl, ebpf-observer) | Complete |
-| 8     | Integration testing + polish             | Complete |
 
 ## License
 
