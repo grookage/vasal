@@ -50,7 +50,7 @@ fn make_exec(script: &str) -> ExecTask {
 fn make_chain_step(script: &str, rollback_script: Option<&str>) -> ChainStep {
     ChainStep {
         task: make_exec(script),
-        rollback: rollback_script.map(|s| make_exec(s)),
+        rollback: rollback_script.map(make_exec),
     }
 }
 
@@ -122,7 +122,8 @@ async fn shell_task_success() {
     assert_eq!(result.status, TaskResultStatus::Success);
     assert_eq!(result.exit_code, Some(0));
     assert_eq!(result.stdout.trim(), "integration_test");
-    assert!(result.duration_ms > 0 || result.duration_ms == 0); // fast tasks may be 0ms
+    // duration_ms is a u64 — always non-negative; just verify the field is populated.
+    let _ = result.duration_ms;
     assert_eq!(result.task_id, exec.id);
 }
 

@@ -49,7 +49,7 @@ fn arb_tags() -> impl Strategy<Value = std::collections::HashMap<String, String>
 fn arb_request_id() -> impl Strategy<Value = RequestId> {
     prop_oneof![
         (1i64..10000).prop_map(RequestId::Integer),
-        "[a-z]{1,8}".prop_map(|s| RequestId::String(s)),
+        "[a-z]{1,8}".prop_map(RequestId::String),
     ]
 }
 
