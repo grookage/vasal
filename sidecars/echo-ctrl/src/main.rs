@@ -49,12 +49,8 @@ impl SidecarHandler for EchoHandler {
     ///
     /// This is a synchronous sidecar — every `submit` returns `Completed`
     /// immediately.
-    async fn submit(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<SubmitResponse, ProtocolError> {
-        let stdout = serde_json::to_string_pretty(&params)
-            .unwrap_or_else(|_| params.to_string());
+    async fn submit(&self, params: serde_json::Value) -> Result<SubmitResponse, ProtocolError> {
+        let stdout = serde_json::to_string_pretty(&params).unwrap_or_else(|_| params.to_string());
 
         Ok(SubmitResponse::Completed {
             stdout,
@@ -70,8 +66,7 @@ impl SidecarHandler for EchoHandler {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -85,9 +80,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Shut down on SIGTERM or Ctrl-C.
     let shutdown = async {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to register SIGTERM handler");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
         tokio::select! {
             _ = sigterm.recv() => info!("received SIGTERM"),
             _ = tokio::signal::ctrl_c() => info!("received SIGINT"),

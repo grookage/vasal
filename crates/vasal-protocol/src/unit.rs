@@ -167,7 +167,13 @@ mod tests {
 
     #[test]
     fn unit_kind_serialization() {
-        assert_eq!(serde_json::to_string(&UnitKind::Sidecar).unwrap(), r#""sidecar""#);
-        assert_eq!(serde_json::to_string(&UnitKind::Package).unwrap(), r#""package""#);
+        assert_eq!(
+            serde_json::to_string(&UnitKind::Sidecar).unwrap(),
+            r#""sidecar""#
+        );
+        assert_eq!(
+            serde_json::to_string(&UnitKind::Package).unwrap(),
+            r#""package""#
+        );
     }
 }

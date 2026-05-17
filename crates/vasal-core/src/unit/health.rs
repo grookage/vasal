@@ -15,6 +15,32 @@ use vasal_protocol::sidecar::{HealthResponse, HealthStatus};
 use crate::config::RuntimeConfig;
 use crate::state::StateStore;
 
+/// Probe a single sidecar's health with retries over `timeout_sec` seconds.
+///
+/// Used during upgrades to verify the new version is healthy before
+/// committing. Returns `true` if the sidecar reports healthy within the
+/// timeout, `false` otherwise.
+pub async fn probe_sidecar(socket_dir: &Path, unit_name: &str, timeout_sec: u64) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_sec);
+    let mut attempt = 0u32;
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            warn!(unit = %unit_name, "health probe timed out");
+            return false;
+        }
+
+        let (health, _error) = check_sidecar(socket_dir, unit_name).await;
+        if health == "ok" || health == "degraded" {
+            debug!(unit = %unit_name, attempt, "health probe passed");
+            return true;
+        }
+
+        attempt += 1;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
 /// Run the health check loop for all managed units.
 ///
 /// Periodically iterates over all units in the state store and checks
@@ -82,10 +108,8 @@ pub async fn run(
                 updated.updated_at = crate::state::now_ms();
 
                 let store_clone = store.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    store_clone.upsert_unit(&updated)
-                })
-                .await;
+                let _ =
+                    tokio::task::spawn_blocking(move || store_clone.upsert_unit(&updated)).await;
             }
         }
     }
@@ -156,7 +180,14 @@ async fn check_package(unit: &crate::state::UnitRow) -> (&'static str, Option<St
         Ok(Ok(output)) if output.status.success() => ("ok", None),
         Ok(Ok(output)) => {
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            ("unhealthy", Some(format!("exit code {:?}: {}", output.status.code(), stderr.trim())))
+            (
+                "unhealthy",
+                Some(format!(
+                    "exit code {:?}: {}",
+                    output.status.code(),
+                    stderr.trim()
+                )),
+            )
         }
         Ok(Err(e)) => ("unhealthy", Some(e.to_string())),
         Err(_) => ("unhealthy", Some("health check timed out".into())),

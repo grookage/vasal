@@ -125,9 +125,7 @@ async fn execute_tick(
     cancel: CancellationToken,
 ) -> TaskResult {
     match exec.executor {
-        Executor::Shell => {
-            super::shell::execute(exec, creds, cancel).await
-        }
+        Executor::Shell => super::shell::execute(exec, creds, cancel).await,
         Executor::Sidecar => {
             let target = exec.target.as_deref().unwrap_or("unknown");
             let method = exec.method.as_deref().unwrap_or("submit");

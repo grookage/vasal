@@ -101,9 +101,7 @@ impl SqlCtrl {
             .map(String::from)
             .or_else(|| self.default_dsn.clone())
             .ok_or_else(|| {
-                ProtocolError::invalid_params(
-                    "no 'dsn' provided and no default DSN configured",
-                )
+                ProtocolError::invalid_params("no 'dsn' provided and no default DSN configured")
             })
     }
 
@@ -117,9 +115,9 @@ impl SqlCtrl {
         let conn_arc = self.get_connection(dsn)?;
         let conn = conn_arc.lock().unwrap();
 
-        let mut stmt = conn.prepare(sql).map_err(|e| {
-            ProtocolError::internal_error(format!("SQL prepare error: {e}"))
-        })?;
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| ProtocolError::internal_error(format!("SQL prepare error: {e}")))?;
 
         let column_count = stmt.column_count();
         let column_names: Vec<String> = (0..column_count)
@@ -127,8 +125,10 @@ impl SqlCtrl {
             .collect();
 
         let bind_params = to_rusqlite_params(params);
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            bind_params.iter().map(|p| p as &dyn rusqlite::types::ToSql).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = bind_params
+            .iter()
+            .map(|p| p as &dyn rusqlite::types::ToSql)
+            .collect();
 
         let rows = stmt
             .query_map(param_refs.as_slice(), |row| {
@@ -147,7 +147,9 @@ impl SqlCtrl {
                 Ok(v) => result_rows.push(v),
                 Err(e) => {
                     warn!(error = %e, "error reading row");
-                    return Err(ProtocolError::internal_error(format!("row read error: {e}")));
+                    return Err(ProtocolError::internal_error(format!(
+                        "row read error: {e}"
+                    )));
                 }
             }
         }
@@ -176,8 +178,10 @@ impl SqlCtrl {
         let conn = conn_arc.lock().unwrap();
 
         let bind_params = to_rusqlite_params(params);
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            bind_params.iter().map(|p| p as &dyn rusqlite::types::ToSql).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = bind_params
+            .iter()
+            .map(|p| p as &dyn rusqlite::types::ToSql)
+            .collect();
 
         let affected = conn
             .execute(sql, param_refs.as_slice())
@@ -217,7 +221,10 @@ impl SqlCtrl {
         let mut table_info = Vec::new();
         for table in &tables {
             let mut info_stmt = conn
-                .prepare(&format!("PRAGMA table_info(\"{}\")", table.replace('"', "\"\"")))
+                .prepare(&format!(
+                    "PRAGMA table_info(\"{}\")",
+                    table.replace('"', "\"\"")
+                ))
                 .map_err(|e| ProtocolError::internal_error(format!("table_info error: {e}")))?;
 
             let columns: Vec<serde_json::Value> = info_stmt
@@ -306,10 +313,7 @@ impl SidecarHandler for SqlCtrl {
     }
 
     /// Execute a SQL action.
-    async fn submit(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<SubmitResponse, ProtocolError> {
+    async fn submit(&self, params: serde_json::Value) -> Result<SubmitResponse, ProtocolError> {
         let p: SqlParams = serde_json::from_value(params)
             .map_err(|e| ProtocolError::invalid_params(e.to_string()))?;
 
@@ -400,8 +404,7 @@ fn row_value_at(row: &rusqlite::Row<'_>, idx: usize) -> serde_json::Value {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -441,9 +444,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Shut down on SIGTERM or Ctrl-C.
     let shutdown = async {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to register SIGTERM handler");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
         tokio::select! {
             _ = sigterm.recv() => info!("received SIGTERM"),
             _ = tokio::signal::ctrl_c() => info!("received SIGINT"),
@@ -506,7 +508,11 @@ mod tests {
 
         let params = vec![serde_json::json!(25)];
         let result = handler
-            .execute_query(&dsn, "SELECT name FROM users WHERE age > ? ORDER BY name", &params)
+            .execute_query(
+                &dsn,
+                "SELECT name FROM users WHERE age > ? ORDER BY name",
+                &params,
+            )
             .unwrap();
 
         match result {

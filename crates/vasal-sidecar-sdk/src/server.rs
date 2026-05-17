@@ -177,10 +177,7 @@ async fn handle_connection<H: SidecarHandler>(
 /// Route a parsed JSON-RPC request to the appropriate [`SidecarHandler`] method.
 async fn dispatch<H: SidecarHandler>(handler: &H, request: &Request) -> Response {
     let id = request.id.clone();
-    let params = request
-        .params
-        .clone()
-        .unwrap_or(serde_json::Value::Null);
+    let params = request.params.clone().unwrap_or(serde_json::Value::Null);
 
     match request.method.as_str() {
         // ── health ─────────────────────────────────────────────────────
@@ -228,16 +225,12 @@ async fn dispatch<H: SidecarHandler>(handler: &H, request: &Request) -> Response
 
 /// Serialize a result value into a success response, falling back to an
 /// internal error if serialization fails.
-fn to_success_or_internal_error<T: serde::Serialize>(
-    id: RequestId,
-    value: &T,
-) -> Response {
+fn to_success_or_internal_error<T: serde::Serialize>(id: RequestId, value: &T) -> Response {
     match serde_json::to_value(value) {
         Ok(v) => Response::success(id, v),
         Err(e) => Response::error(
             id,
-            ProtocolError::internal_error(format!("response serialization failed: {e}"))
-                .into(),
+            ProtocolError::internal_error(format!("response serialization failed: {e}")).into(),
         ),
     }
 }
@@ -285,8 +278,6 @@ fn cleanup_socket(path: &Path) {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,10 +303,7 @@ mod tests {
             }
         }
 
-        async fn submit(
-            &self,
-            params: serde_json::Value,
-        ) -> Result<SubmitResponse, ProtocolError> {
+        async fn submit(&self, params: serde_json::Value) -> Result<SubmitResponse, ProtocolError> {
             Ok(SubmitResponse::Completed {
                 stdout: serde_json::to_string_pretty(&params)
                     .unwrap_or_else(|_| params.to_string()),
@@ -326,9 +314,7 @@ mod tests {
     }
 
     /// Spin up a server on a temp socket, send one request, return the response.
-    async fn roundtrip(
-        request: &Request,
-    ) -> Response {
+    async fn roundtrip(request: &Request) -> Response {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("test.sock");
 
@@ -338,7 +324,9 @@ mod tests {
         let server_handle = tokio::spawn({
             async move {
                 let _ = server
-                    .run(async { shutdown_rx.await.ok(); })
+                    .run(async {
+                        shutdown_rx.await.ok();
+                    })
                     .await;
             }
         });
@@ -368,8 +356,7 @@ mod tests {
         let resp = roundtrip(&req).await;
         assert!(resp.is_success());
 
-        let result: HealthResponse =
-            serde_json::from_value(resp.result.unwrap()).unwrap();
+        let result: HealthResponse = serde_json::from_value(resp.result.unwrap()).unwrap();
         assert_eq!(result.status, HealthStatus::Ok);
         assert_eq!(result.version.as_deref(), Some("0.0.1"));
     }
@@ -381,12 +368,10 @@ mod tests {
         let resp = roundtrip(&req).await;
         assert!(resp.is_success());
 
-        let result: SubmitResponse =
-            serde_json::from_value(resp.result.unwrap()).unwrap();
+        let result: SubmitResponse = serde_json::from_value(resp.result.unwrap()).unwrap();
         match result {
             SubmitResponse::Completed { stdout, .. } => {
-                let echoed: serde_json::Value =
-                    serde_json::from_str(&stdout).unwrap();
+                let echoed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
                 assert_eq!(echoed, params);
             }
             other => panic!("expected Completed, got {other:?}"),
@@ -404,11 +389,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_on_sync_sidecar_returns_method_not_found() {
-        let req = Request::new(
-            "status",
-            Some(serde_json::json!({"task_id": "abc"})),
-            4i64,
-        );
+        let req = Request::new("status", Some(serde_json::json!({"task_id": "abc"})), 4i64);
         let resp = roundtrip(&req).await;
         assert!(!resp.is_success());
         assert_eq!(
@@ -426,7 +407,11 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         tokio::spawn(async move {
-            let _ = server.run(async { shutdown_rx.await.ok(); }).await;
+            let _ = server
+                .run(async {
+                    shutdown_rx.await.ok();
+                })
+                .await;
         });
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -444,10 +429,7 @@ mod tests {
         let resp: Response = serde_json::from_slice(&resp_frame).unwrap();
 
         assert!(!resp.is_success());
-        assert_eq!(
-            resp.error.unwrap().code,
-            vasal_protocol::error::PARSE_ERROR,
-        );
+        assert_eq!(resp.error.unwrap().code, vasal_protocol::error::PARSE_ERROR,);
 
         let _ = shutdown_tx.send(());
     }

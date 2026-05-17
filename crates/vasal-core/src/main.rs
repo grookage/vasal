@@ -26,6 +26,15 @@ use vasal_core::{audit, heartbeat, unit};
 /// Agent version, injected at compile time.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Holds OTel shutdown guard (if feature-enabled and configured).
+///
+/// The guard must outlive all tracing calls — dropping it flushes pending
+/// spans and shuts down the OTLP exporter.
+struct TracingGuard {
+    #[cfg(feature = "otel")]
+    _otel: Option<vasal_core::telemetry::TelemetryGuard>,
+}
+
 /// Vasal — a lightweight, protocol-first, general-purpose host agent.
 #[derive(Parser)]
 #[command(name = "vasal", version, about)]
@@ -49,7 +58,7 @@ async fn main() {
     };
 
     // ── Logging ────────────────────────────────────────────────────────
-    init_tracing(&cfg.agent.log_level);
+    let _tracing = init_tracing(&cfg.agent.log_level, &cfg);
     info!(
         version = VERSION,
         config = %cli.config.display(),
@@ -79,12 +88,10 @@ async fn main() {
     // SIGTERM / SIGINT → graceful shutdown.
     let shutdown_clone = shutdown.clone();
     tokio::spawn(async move {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to register SIGTERM handler");
-        let mut sigint =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-                .expect("failed to register SIGINT handler");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .expect("failed to register SIGINT handler");
 
         tokio::select! {
             _ = sigterm.recv() => info!("received SIGTERM"),
@@ -99,9 +106,8 @@ async fn main() {
         let runtime_tx = runtime_tx.clone();
         let config_path = config_path.clone();
         tokio::spawn(async move {
-            let mut sighup =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
-                    .expect("failed to register SIGHUP handler");
+            let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                .expect("failed to register SIGHUP handler");
 
             loop {
                 sighup.recv().await;
@@ -391,8 +397,14 @@ async fn dispatch_work(item: ReceivedWork, manager: &TaskManager) {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/// Initialize the `tracing` subscriber with the given log level filter.
-fn init_tracing(level: &str) {
+/// Initialize the `tracing` subscriber with optional OpenTelemetry export.
+///
+/// When compiled with `--features otel` and the `[telemetry]` config section
+/// has `enabled = true`, an OTLP layer is added that exports trace spans to
+/// the configured collector.  All existing `tracing` events are automatically
+/// bridged — no `#[instrument]` attributes are required (though they help).
+fn init_tracing(level: &str, cfg: &Config) -> TracingGuard {
+    use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
 
     let filter = EnvFilter::try_new(level).unwrap_or_else(|_| {
@@ -400,8 +412,57 @@ fn init_tracing(level: &str) {
         EnvFilter::new("info")
     });
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .init();
+    let fmt_layer = tracing_subscriber::fmt::layer().with_target(true);
+
+    // ── With OpenTelemetry ─────────────────────────────────────────────
+    #[cfg(feature = "otel")]
+    {
+        let (guard, otel_layer) = if cfg.telemetry.enabled {
+            match vasal_core::telemetry::init(
+                &cfg.telemetry.otlp_endpoint,
+                &cfg.telemetry.service_name,
+            ) {
+                Ok((guard, tracer)) => {
+                    let layer = tracing_opentelemetry::layer().with_tracer(tracer);
+                    eprintln!(
+                        "info: OpenTelemetry export enabled → {}",
+                        cfg.telemetry.otlp_endpoint,
+                    );
+                    (Some(guard), Some(layer))
+                }
+                Err(e) => {
+                    eprintln!("warning: failed to initialise OpenTelemetry: {e}");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer)
+            .with(otel_layer)
+            .init();
+
+        TracingGuard { _otel: guard }
+    }
+
+    // ── Without OpenTelemetry ──────────────────────────────────────────
+    #[cfg(not(feature = "otel"))]
+    {
+        if cfg.telemetry.enabled {
+            eprintln!(
+                "warning: telemetry.enabled = true but vasal was compiled without the `otel` feature \
+                 — rebuild with `cargo build --features otel` to enable OpenTelemetry export"
+            );
+        }
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer)
+            .init();
+
+        TracingGuard {}
+    }
 }

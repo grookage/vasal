@@ -1,0 +1,31 @@
+[package]
+name = "vasal-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+vasal-protocol = { path = "../crates/vasal-protocol" }
+vasal-sidecar-sdk = { path = "../crates/vasal-sidecar-sdk" }
+bytes = "1"
+serde_json = "1"
+tokio-util = { version = "0.7", features = ["codec"] }
+
+[[bin]]
+name = "fuzz_codec"
+path = "fuzz_targets/fuzz_codec.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_jsonrpc"
+path = "fuzz_targets/fuzz_jsonrpc.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_task"
+path = "fuzz_targets/fuzz_task.rs"
+doc = false

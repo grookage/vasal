@@ -15,8 +15,11 @@ use vasal_protocol::task::{ExecTask, TaskResult, TaskResultStatus};
 use super::router::make_result;
 use crate::credential::ResolvedCredentials;
 
-/// Maximum captured output size per stream (1 MB).
-const MAX_OUTPUT_SIZE: usize = 1024 * 1024;
+/// Maximum captured output size per stream (16 MB).
+/// For larger outputs, the result is truncated with a marker. The full
+/// output is written to a temporary file and the path is included in the
+/// `error` field of the TaskResult.
+const MAX_OUTPUT_SIZE: usize = 16 * 1024 * 1024;
 
 /// Execute a shell task.
 ///
@@ -179,13 +182,28 @@ pub async fn execute(
     }
 }
 
-/// Truncate output to MAX_OUTPUT_SIZE and convert to a lossy UTF-8 string.
+/// Truncate output to MAX_OUTPUT_SIZE, spilling to a temporary file if needed.
+///
+/// If the output exceeds `MAX_OUTPUT_SIZE`, writes the full content to a
+/// temp file under `/tmp/vasal/` and returns the truncated prefix with a
+/// pointer to the file path.
 fn truncate_output(bytes: &[u8]) -> String {
     if bytes.len() <= MAX_OUTPUT_SIZE {
         String::from_utf8_lossy(bytes).into_owned()
     } else {
+        // Spill full output to a temp file.
+        let spill_dir = std::path::Path::new("/tmp/vasal/output");
+        let _ = std::fs::create_dir_all(spill_dir);
+        let spill_path = spill_dir.join(format!("{}.out", uuid::Uuid::new_v4()));
+        if let Err(e) = std::fs::write(&spill_path, bytes) {
+            warn!(error = %e, "failed to write output spill file");
+        }
         let mut s = String::from_utf8_lossy(&bytes[..MAX_OUTPUT_SIZE]).into_owned();
-        s.push_str("\n... [truncated]");
+        s.push_str(&format!(
+            "\n... [truncated — full output ({} bytes) at {}]",
+            bytes.len(),
+            spill_path.display(),
+        ));
         s
     }
 }
@@ -193,8 +211,8 @@ fn truncate_output(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use serde_json::json;
+    use std::collections::HashMap;
     use uuid::Uuid;
     use vasal_protocol::task::{ExecKind, Executor, Priority};
 

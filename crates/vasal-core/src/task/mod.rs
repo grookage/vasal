@@ -138,10 +138,13 @@ impl TaskManager {
         // Register as active.
         {
             let mut active = self.active_tasks.lock().await;
-            active.insert(task_id, ActiveTask {
-                cancel_token: cancel_token.clone(),
-                kind: kind_tag,
-            });
+            active.insert(
+                task_id,
+                ActiveTask {
+                    cancel_token: cancel_token.clone(),
+                    kind: kind_tag,
+                },
+            );
         }
         self.update_counts().await;
 
@@ -177,18 +180,25 @@ impl TaskManager {
             // Record result in journal.
             let journal_row = result_to_journal_row(&result);
             let store_clone = store.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                store_clone.record_task_result(&journal_row)
-            })
-            .await;
+            let _ =
+                tokio::task::spawn_blocking(move || store_clone.record_task_result(&journal_row))
+                    .await;
 
             // Record audit event.
             let event_type = match result.status {
-                vasal_protocol::task::TaskResultStatus::Success => crate::audit::event::TASK_COMPLETED,
+                vasal_protocol::task::TaskResultStatus::Success => {
+                    crate::audit::event::TASK_COMPLETED
+                }
                 vasal_protocol::task::TaskResultStatus::Failed => crate::audit::event::TASK_FAILED,
-                vasal_protocol::task::TaskResultStatus::Cancelled => crate::audit::event::TASK_CANCELLED,
-                vasal_protocol::task::TaskResultStatus::Timeout => crate::audit::event::TASK_TIMEOUT,
-                vasal_protocol::task::TaskResultStatus::RolledBack => crate::audit::event::TASK_FAILED,
+                vasal_protocol::task::TaskResultStatus::Cancelled => {
+                    crate::audit::event::TASK_CANCELLED
+                }
+                vasal_protocol::task::TaskResultStatus::Timeout => {
+                    crate::audit::event::TASK_TIMEOUT
+                }
+                vasal_protocol::task::TaskResultStatus::RolledBack => {
+                    crate::audit::event::TASK_FAILED
+                }
             };
             crate::audit::record(
                 &store,
@@ -222,10 +232,13 @@ impl TaskManager {
 
         {
             let mut active = self.active_tasks.lock().await;
-            active.insert(task_id, ActiveTask {
-                cancel_token: cancel_token.clone(),
-                kind: TaskKindTag::Oneshot,
-            });
+            active.insert(
+                task_id,
+                ActiveTask {
+                    cancel_token: cancel_token.clone(),
+                    kind: TaskKindTag::Oneshot,
+                },
+            );
         }
         self.update_counts().await;
 
@@ -237,22 +250,15 @@ impl TaskManager {
         let result_tx = self.result_tx.clone();
 
         tokio::spawn(async move {
-            let result = router::route_task(
-                &task,
-                &http_client,
-                &socket_dir,
-                &store,
-                cancel_token,
-            )
-            .await;
+            let result =
+                router::route_task(&task, &http_client, &socket_dir, &store, cancel_token).await;
 
             // Journal + audit.
             let journal_row = result_to_journal_row(&result);
             let store_clone = store.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                store_clone.record_task_result(&journal_row)
-            })
-            .await;
+            let _ =
+                tokio::task::spawn_blocking(move || store_clone.record_task_result(&journal_row))
+                    .await;
 
             // Forward result to transport layer.
             if let Some(tx) = &result_tx {
@@ -307,10 +313,13 @@ impl TaskManager {
         // Register the chain as an active task (cancellable by chain_id).
         {
             let mut active = self.active_tasks.lock().await;
-            active.insert(chain_id, ActiveTask {
-                cancel_token: cancel_token.clone(),
-                kind: TaskKindTag::Oneshot,
-            });
+            active.insert(
+                chain_id,
+                ActiveTask {
+                    cancel_token: cancel_token.clone(),
+                    kind: TaskKindTag::Oneshot,
+                },
+            );
         }
         self.update_counts().await;
 
@@ -332,23 +341,15 @@ impl TaskManager {
                 }
             };
 
-            let results = chain::execute(
-                &chain,
-                &http_client,
-                &socket_dir,
-                &store,
-                cancel_token,
-            )
-            .await;
+            let results =
+                chain::execute(&chain, &http_client, &socket_dir, &store, cancel_token).await;
 
             // Record and forward each step result.
             for result in &results {
                 let journal_row = result_to_journal_row(result);
                 let s = store.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    s.record_task_result(&journal_row)
-                })
-                .await;
+                let _ =
+                    tokio::task::spawn_blocking(move || s.record_task_result(&journal_row)).await;
 
                 if let Some(tx) = &result_tx {
                     let _ = tx.send(result.clone()).await;
@@ -384,8 +385,14 @@ async fn update_counts_static(
     tx: &watch::Sender<ActiveTaskCounts>,
 ) {
     let guard = active.lock().await;
-    let oneshot = guard.values().filter(|t| t.kind == TaskKindTag::Oneshot).count() as u32;
-    let continuous = guard.values().filter(|t| t.kind == TaskKindTag::Continuous).count() as u32;
+    let oneshot = guard
+        .values()
+        .filter(|t| t.kind == TaskKindTag::Oneshot)
+        .count() as u32;
+    let continuous = guard
+        .values()
+        .filter(|t| t.kind == TaskKindTag::Continuous)
+        .count() as u32;
     let _ = tx.send(ActiveTaskCounts {
         oneshot,
         continuous,

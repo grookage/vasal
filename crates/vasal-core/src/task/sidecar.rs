@@ -111,16 +111,27 @@ pub async fn execute(
     };
 
     match submit {
-        SubmitResponse::Completed { stdout, stderr, .. } => {
-            make_result(task_id, TaskResultStatus::Success, None, stdout, stderr, start.elapsed(), None)
-        }
-        SubmitResponse::Failed { error, stderr } => {
-            make_result(
-                task_id, TaskResultStatus::Failed, None,
-                String::new(), stderr, start.elapsed(), Some(error),
-            )
-        }
-        SubmitResponse::Accepted { task_id: sidecar_task_id } => {
+        SubmitResponse::Completed { stdout, stderr, .. } => make_result(
+            task_id,
+            TaskResultStatus::Success,
+            None,
+            stdout,
+            stderr,
+            start.elapsed(),
+            None,
+        ),
+        SubmitResponse::Failed { error, stderr } => make_result(
+            task_id,
+            TaskResultStatus::Failed,
+            None,
+            String::new(),
+            stderr,
+            start.elapsed(),
+            Some(error),
+        ),
+        SubmitResponse::Accepted {
+            task_id: sidecar_task_id,
+        } => {
             // Async mode — poll with backoff.
             poll_until_complete(
                 task_id,
@@ -170,7 +181,9 @@ async fn poll_until_complete(
         }
 
         // Backoff delay.
-        let delay_ms = POLL_DELAYS_MS.get(poll_index).copied()
+        let delay_ms = POLL_DELAYS_MS
+            .get(poll_index)
+            .copied()
             .unwrap_or(*POLL_DELAYS_MS.last().unwrap());
         if delay_ms > 0 {
             tokio::select! {
@@ -213,27 +226,48 @@ async fn poll_until_complete(
                 }
 
                 let value = resp.result.unwrap_or_default();
-                if let Ok(status) = serde_json::from_value::<vasal_protocol::sidecar::StatusResponse>(value) {
+                if let Ok(status) =
+                    serde_json::from_value::<vasal_protocol::sidecar::StatusResponse>(value)
+                {
                     match status {
                         vasal_protocol::sidecar::StatusResponse::Running => {
                             debug!(task_id = %sidecar_task_id, "sidecar task still running");
                         }
-                        vasal_protocol::sidecar::StatusResponse::Completed { stdout, stderr, .. } => {
+                        vasal_protocol::sidecar::StatusResponse::Completed {
+                            stdout,
+                            stderr,
+                            ..
+                        } => {
                             return make_result(
-                                agent_task_id, TaskResultStatus::Success, None,
-                                stdout, stderr, start.elapsed(), None,
+                                agent_task_id,
+                                TaskResultStatus::Success,
+                                None,
+                                stdout,
+                                stderr,
+                                start.elapsed(),
+                                None,
                             );
                         }
                         vasal_protocol::sidecar::StatusResponse::Failed { error, stderr } => {
                             return make_result(
-                                agent_task_id, TaskResultStatus::Failed, None,
-                                String::new(), stderr, start.elapsed(), Some(error),
+                                agent_task_id,
+                                TaskResultStatus::Failed,
+                                None,
+                                String::new(),
+                                stderr,
+                                start.elapsed(),
+                                Some(error),
                             );
                         }
                         vasal_protocol::sidecar::StatusResponse::Cancelled => {
                             return make_result(
-                                agent_task_id, TaskResultStatus::Cancelled, None,
-                                String::new(), String::new(), start.elapsed(), None,
+                                agent_task_id,
+                                TaskResultStatus::Cancelled,
+                                None,
+                                String::new(),
+                                String::new(),
+                                start.elapsed(),
+                                None,
                             );
                         }
                     }
@@ -269,16 +303,19 @@ pub async fn call_raw(
     // Build and send request.
     let req = Request::new(method, params, 1i64);
     let payload = serde_json::to_vec(&req)?;
-    framed.send(Bytes::from(payload)).await.map_err(|e| {
-        crate::Error::Transport(format!("failed to send to sidecar: {e}"))
-    })?;
+    framed
+        .send(Bytes::from(payload))
+        .await
+        .map_err(|e| crate::Error::Transport(format!("failed to send to sidecar: {e}")))?;
 
     // Read response.
-    let frame = framed.next().await.ok_or_else(|| {
-        crate::Error::Transport("sidecar closed connection without responding".into())
-    })?.map_err(|e| {
-        crate::Error::Transport(format!("failed to read sidecar response: {e}"))
-    })?;
+    let frame = framed
+        .next()
+        .await
+        .ok_or_else(|| {
+            crate::Error::Transport("sidecar closed connection without responding".into())
+        })?
+        .map_err(|e| crate::Error::Transport(format!("failed to read sidecar response: {e}")))?;
 
     let response: Response = serde_json::from_slice(&frame)?;
     Ok(response)

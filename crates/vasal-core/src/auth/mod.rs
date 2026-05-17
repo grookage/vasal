@@ -87,11 +87,8 @@ impl AuthManager {
                 bootstrap_path.display(),
             ))
         })?;
-        let config: BootstrapConfig = toml::from_str(&content).map_err(|e| {
-            crate::Error::Auth(format!(
-                "failed to parse bootstrap config: {e}",
-            ))
-        })?;
+        let config: BootstrapConfig = toml::from_str(&content)
+            .map_err(|e| crate::Error::Auth(format!("failed to parse bootstrap config: {e}",)))?;
 
         let resp = http_client
             .post(auth_provider_url)
@@ -138,6 +135,8 @@ impl AuthManager {
         auth_provider_url: &str,
         http_client: &reqwest::Client,
     ) -> crate::Result<()> {
-        self.token_store.refresh(auth_provider_url, http_client).await
+        self.token_store
+            .refresh(auth_provider_url, http_client)
+            .await
     }
 }

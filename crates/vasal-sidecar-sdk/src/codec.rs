@@ -71,8 +71,7 @@ impl Decoder for LengthPrefixCodec {
         }
 
         // Peek at the length without advancing the cursor.
-        let payload_len =
-            u32::from_be_bytes([src[0], src[1], src[2], src[3]]) as usize;
+        let payload_len = u32::from_be_bytes([src[0], src[1], src[2], src[3]]) as usize;
 
         if payload_len > self.max_size {
             return Err(io::Error::new(
@@ -137,10 +136,7 @@ mod tests {
 
         // First 4 bytes should be the payload length in big-endian.
         let expected_len = payload.len() as u32;
-        assert_eq!(
-            &buf[..HEADER_LEN],
-            &expected_len.to_be_bytes(),
-        );
+        assert_eq!(&buf[..HEADER_LEN], &expected_len.to_be_bytes(),);
 
         // Decode.
         let decoded = codec.decode(&mut buf).unwrap().expect("complete frame");

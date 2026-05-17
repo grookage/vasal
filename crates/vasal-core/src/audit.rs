@@ -119,10 +119,8 @@ async fn flush_once(
     batch_size: usize,
 ) -> crate::Result<usize> {
     let store_clone = store.clone();
-    let events = tokio::task::spawn_blocking(move || {
-        store_clone.pending_audit_events(batch_size)
-    })
-    .await??;
+    let events =
+        tokio::task::spawn_blocking(move || store_clone.pending_audit_events(batch_size)).await??;
 
     if events.is_empty() {
         return Ok(0);

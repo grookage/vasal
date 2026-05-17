@@ -85,6 +85,15 @@ impl TokenStore {
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::write(path, json)?;
+            // Restrict token file permissions to owner-only (0600).
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o600);
+                if let Err(e) = std::fs::set_permissions(path, perms) {
+                    tracing::warn!(error = %e, "failed to set token file permissions to 0600");
+                }
+            }
         }
         Ok(())
     }
@@ -116,14 +125,11 @@ impl TokenStore {
     ) -> crate::Result<()> {
         let refresh_token = {
             let guard = self.inner.read().unwrap();
-            guard
-                .as_ref()
-                .and_then(|t| t.refresh_token.clone())
+            guard.as_ref().and_then(|t| t.refresh_token.clone())
         };
 
-        let refresh_token = refresh_token.ok_or_else(|| {
-            crate::Error::Auth("no refresh token available".into())
-        })?;
+        let refresh_token =
+            refresh_token.ok_or_else(|| crate::Error::Auth("no refresh token available".into()))?;
 
         let resp = http_client
             .post(auth_provider_url)

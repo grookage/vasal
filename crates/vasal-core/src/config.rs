@@ -20,14 +20,16 @@ pub struct Config {
     pub auth: AuthConfig,
     pub shell: ShellConfig,
     pub units: UnitsConfig,
+    /// OpenTelemetry configuration (requires the `otel` compile-time feature).
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
 }
 
 impl Config {
     /// Load and parse configuration from a TOML file.
     pub fn load(path: &Path) -> crate::Result<Self> {
-        let content = std::fs::read_to_string(path).map_err(|e| {
-            crate::Error::Config(format!("failed to read {}: {e}", path.display()))
-        })?;
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| crate::Error::Config(format!("failed to read {}: {e}", path.display())))?;
         let config: Self = toml::from_str(&content).map_err(|e| {
             crate::Error::Config(format!("failed to parse {}: {e}", path.display()))
         })?;
@@ -45,6 +47,91 @@ impl Config {
             audit_flush_interval_sec: self.audit.flush_interval_sec,
         }
     }
+
+    /// Validate configuration for common misconfigurations.
+    ///
+    /// Returns a list of warnings and errors. Errors indicate the agent
+    /// will likely fail to start; warnings indicate sub-optimal but
+    /// functional configurations.
+    pub fn lint(&self) -> Vec<ConfigLint> {
+        let mut results = Vec::new();
+
+        // Auth disabled
+        if self.auth.provider.is_empty() || self.auth.provider == "none" {
+            results.push(ConfigLint {
+                severity: LintSeverity::Warning,
+                message: "auth.provider is disabled — the agent will run unauthenticated. \
+                          Set auth.provider to an auth endpoint for production deployments."
+                    .into(),
+            });
+        }
+
+        // Transport config mismatch
+        match self.transport.mode {
+            TransportMode::Poll if self.transport.poll.is_none() => {
+                results.push(ConfigLint {
+                    severity: LintSeverity::Error,
+                    message: "transport.mode = \"poll\" but [transport.poll] section is missing"
+                        .into(),
+                });
+            }
+            TransportMode::Grpc if self.transport.grpc.is_none() => {
+                results.push(ConfigLint {
+                    severity: LintSeverity::Error,
+                    message: "transport.mode = \"grpc\" but [transport.grpc] section is missing"
+                        .into(),
+                });
+            }
+            _ => {}
+        }
+
+        // Zero concurrency
+        if self.shell.max_concurrent == 0 {
+            results.push(ConfigLint {
+                severity: LintSeverity::Error,
+                message: "shell.max_concurrent is 0 — no tasks can execute".into(),
+            });
+        }
+
+        // Data dir existence
+        if !self.agent.data_dir.exists() {
+            results.push(ConfigLint {
+                severity: LintSeverity::Warning,
+                message: format!(
+                    "agent.data_dir {:?} does not exist — it will be created on startup",
+                    self.agent.data_dir,
+                ),
+            });
+        }
+
+        // Heartbeat endpoint validation
+        if self.heartbeat.endpoint.is_empty() {
+            results.push(ConfigLint {
+                severity: LintSeverity::Warning,
+                message: "heartbeat.endpoint is empty — heartbeats will fail".into(),
+            });
+        }
+
+        results
+    }
+}
+
+/// Configuration lint result.
+#[derive(Debug, Clone)]
+pub struct ConfigLint {
+    /// Severity of the lint finding.
+    pub severity: LintSeverity,
+    /// Human-readable description of the issue.
+    pub message: String,
+}
+
+/// Severity level for configuration lint findings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LintSeverity {
+    /// The agent will likely fail to start or operate correctly.
+    Error,
+    /// Sub-optimal but functional configuration.
+    Warning,
 }
 
 // ── Runtime (hot-reloadable) config ────────────────────────────────────────
@@ -66,7 +153,11 @@ pub fn log_config_diff(old: &RuntimeConfig, new: &RuntimeConfig) {
         info!(old = %old.log_level, new = %new.log_level, "log_level changed");
     }
     if old.max_concurrent != new.max_concurrent {
-        info!(old = old.max_concurrent, new = new.max_concurrent, "max_concurrent changed");
+        info!(
+            old = old.max_concurrent,
+            new = new.max_concurrent,
+            "max_concurrent changed"
+        );
     }
     if old.heartbeat_interval_sec != new.heartbeat_interval_sec {
         info!(
@@ -83,7 +174,11 @@ pub fn log_config_diff(old: &RuntimeConfig, new: &RuntimeConfig) {
         );
     }
     if old.audit_batch_size != new.audit_batch_size {
-        info!(old = old.audit_batch_size, new = new.audit_batch_size, "audit_batch_size changed");
+        info!(
+            old = old.audit_batch_size,
+            new = new.audit_batch_size,
+            "audit_batch_size changed"
+        );
     }
     if old.audit_flush_interval_sec != new.audit_flush_interval_sec {
         info!(
@@ -202,25 +297,86 @@ pub struct UnitsConfig {
     pub health_check_interval_sec: u64,
 }
 
+/// OpenTelemetry export configuration.
+///
+/// Requires the `otel` compile-time feature to have any effect.  When the
+/// feature is absent, the section is parsed but ignored (with a warning).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TelemetryConfig {
+    /// Whether OTel export is enabled (default: `false`).
+    #[serde(default)]
+    pub enabled: bool,
+    /// OTLP collector endpoint (HTTP/protobuf).
+    #[serde(default = "defaults::otlp_endpoint")]
+    pub otlp_endpoint: String,
+    /// Service name reported to the collector.
+    #[serde(default = "defaults::service_name")]
+    pub service_name: String,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            otlp_endpoint: defaults::otlp_endpoint(),
+            service_name: defaults::service_name(),
+        }
+    }
+}
+
 // ── Defaults ───────────────────────────────────────────────────────────────
 
 mod defaults {
     use std::path::PathBuf;
 
-    pub fn data_dir() -> PathBuf { PathBuf::from("/var/lib/vasal") }
-    pub fn socket_dir() -> PathBuf { PathBuf::from("/run/vasal") }
-    pub fn log_level() -> String { "info".into() }
-    pub fn poll_interval_sec() -> u64 { 10 }
-    pub fn reconnect_interval_sec() -> u64 { 5 }
-    pub fn heartbeat_interval_sec() -> u64 { 10 }
-    pub fn audit_batch_size() -> usize { 50 }
-    pub fn audit_flush_interval_sec() -> u64 { 5 }
-    pub fn token_file() -> PathBuf { PathBuf::from("/var/lib/vasal/token.json") }
-    pub fn shell_timeout_ms() -> u64 { 300_000 }
-    pub fn max_concurrent() -> usize { 4 }
-    pub fn working_dir() -> PathBuf { PathBuf::from("/tmp/vasal") }
-    pub fn artifact_cache_dir() -> PathBuf { PathBuf::from("/var/cache/vasal") }
-    pub fn health_check_interval_sec() -> u64 { 30 }
+    pub fn data_dir() -> PathBuf {
+        PathBuf::from("/var/lib/vasal")
+    }
+    pub fn socket_dir() -> PathBuf {
+        PathBuf::from("/run/vasal")
+    }
+    pub fn log_level() -> String {
+        "info".into()
+    }
+    pub fn poll_interval_sec() -> u64 {
+        10
+    }
+    pub fn reconnect_interval_sec() -> u64 {
+        5
+    }
+    pub fn heartbeat_interval_sec() -> u64 {
+        10
+    }
+    pub fn audit_batch_size() -> usize {
+        50
+    }
+    pub fn audit_flush_interval_sec() -> u64 {
+        5
+    }
+    pub fn token_file() -> PathBuf {
+        PathBuf::from("/var/lib/vasal/token.json")
+    }
+    pub fn shell_timeout_ms() -> u64 {
+        300_000
+    }
+    pub fn max_concurrent() -> usize {
+        4
+    }
+    pub fn working_dir() -> PathBuf {
+        PathBuf::from("/tmp/vasal")
+    }
+    pub fn artifact_cache_dir() -> PathBuf {
+        PathBuf::from("/var/cache/vasal")
+    }
+    pub fn health_check_interval_sec() -> u64 {
+        30
+    }
+    pub fn otlp_endpoint() -> String {
+        "http://localhost:4318".into()
+    }
+    pub fn service_name() -> String {
+        "vasal".into()
+    }
 }
 
 #[cfg(test)]
@@ -271,5 +427,25 @@ provider = "https://auth.internal/v1/token"
     #[test]
     fn transport_mode_default() {
         assert_eq!(TransportMode::default(), TransportMode::Poll);
+    }
+
+    #[test]
+    fn config_lint_catches_disabled_auth() {
+        let mut config: Config = toml::from_str(MINIMAL_CONFIG).unwrap();
+        config.auth.provider = "none".into();
+        let lints = config.lint();
+        assert!(lints
+            .iter()
+            .any(|l| l.severity == LintSeverity::Warning && l.message.contains("unauthenticated")));
+    }
+
+    #[test]
+    fn config_lint_catches_zero_concurrency() {
+        let mut config: Config = toml::from_str(MINIMAL_CONFIG).unwrap();
+        config.shell.max_concurrent = 0;
+        let lints = config.lint();
+        assert!(lints
+            .iter()
+            .any(|l| l.severity == LintSeverity::Error && l.message.contains("max_concurrent")));
     }
 }

@@ -171,9 +171,7 @@ pub fn rollback(pending: &PendingUpgrade) -> crate::Result<()> {
             path = %pending.rollback_path.display(),
             "rollback binary not found — cannot roll back",
         );
-        return Err(crate::Error::Unit(
-            "rollback binary not found".into(),
-        ));
+        return Err(crate::Error::Unit("rollback binary not found".into()));
     }
 
     std::fs::rename(&pending.rollback_path, &current_exe)?;

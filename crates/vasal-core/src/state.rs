@@ -192,7 +192,12 @@ impl StateStore {
         conn.execute(
             "INSERT INTO audit_log (timestamp, event_type, task_id, detail_json, forwarded)
              VALUES (?1, ?2, ?3, ?4, 0)",
-            params![event.timestamp, event.event_type, event.task_id, event.detail_json],
+            params![
+                event.timestamp,
+                event.event_type,
+                event.task_id,
+                event.detail_json
+            ],
         )?;
         Ok(())
     }

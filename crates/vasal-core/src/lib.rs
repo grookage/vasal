@@ -8,9 +8,12 @@ pub mod auth;
 pub mod config;
 pub mod credential;
 pub mod heartbeat;
+pub mod metrics;
 pub mod self_upgrade;
 pub mod state;
 pub mod task;
+#[cfg(feature = "otel")]
+pub mod telemetry;
 pub mod transport;
 pub mod unit;
 

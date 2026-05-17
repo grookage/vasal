@@ -38,6 +38,14 @@ rusqlite = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
 tokio-stream = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+
+[features]
+default = []
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 
 [build-dependencies]
 tonic-build = { workspace = true }
@@ -49,6 +57,9 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
 reqwest = { workspace = true }
 
 [package.metadata.deb]

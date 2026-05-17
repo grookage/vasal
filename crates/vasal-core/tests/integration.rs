@@ -225,7 +225,11 @@ async fn chain_all_steps_succeed() {
 
     assert_eq!(results.len(), 3);
     for (i, r) in results.iter().enumerate() {
-        assert_eq!(r.status, TaskResultStatus::Success, "step {i} should succeed");
+        assert_eq!(
+            r.status,
+            TaskResultStatus::Success,
+            "step {i} should succeed"
+        );
         assert_eq!(r.chain_id, Some(chain.id));
         assert_eq!(r.step_index, Some(i as u32));
     }
@@ -248,10 +252,7 @@ async fn chain_rollback_all_on_failure() {
     let chain = TaskChain {
         id: Uuid::new_v4(),
         steps: vec![
-            make_chain_step(
-                "echo step1",
-                Some(&format!("touch {}", marker.display())),
-            ),
+            make_chain_step("echo step1", Some(&format!("touch {}", marker.display()))),
             make_chain_step("exit 1", Some("echo rollback2")),
             make_chain_step("echo step3_never", None),
         ],
@@ -290,10 +291,7 @@ async fn chain_rollback_failed_only() {
     let chain = TaskChain {
         id: Uuid::new_v4(),
         steps: vec![
-            make_chain_step(
-                "echo step1",
-                Some(&format!("touch {}", marker.display())),
-            ),
+            make_chain_step("echo step1", Some(&format!("touch {}", marker.display()))),
             make_chain_step("exit 1", Some("echo only_this_rollback")),
             make_chain_step("echo step3_never", None),
         ],
@@ -392,7 +390,10 @@ async fn sidecar_execute_full_flow() {
         serde_json::from_str(&result.stdout).expect("stdout should be valid JSON");
     assert_eq!(echoed["action"], "discover");
     assert_eq!(echoed["target"], "db-01");
-    assert!(result.duration_ms < 5000, "should complete well within timeout");
+    assert!(
+        result.duration_ms < 5000,
+        "should complete well within timeout"
+    );
 
     child.kill().await.ok();
 }
@@ -460,9 +461,7 @@ async fn task_manager_shell_submit_and_journal() {
     );
 
     // There should be at least a "task.received" event.
-    let has_received = task_events
-        .iter()
-        .any(|e| e.event_type == "task.received");
+    let has_received = task_events.iter().any(|e| e.event_type == "task.received");
     assert!(has_received, "should have a task.received audit event");
 
     // And a terminal event (task.completed or task.failed).
@@ -517,8 +516,7 @@ async fn task_manager_cancel_running_task() {
     // Verify a task.cancelled audit event exists.
     let events = store.pending_audit_events(100).unwrap();
     let cancelled = events.iter().any(|e| {
-        e.event_type == "task.cancelled"
-            && e.task_id.as_deref() == Some(&task_id.to_string())
+        e.event_type == "task.cancelled" && e.task_id.as_deref() == Some(&task_id.to_string())
     });
     assert!(cancelled, "should have a task.cancelled audit event");
 }
@@ -570,8 +568,7 @@ async fn task_manager_sidecar_submit() {
     // Verify audit events.
     let events = store.pending_audit_events(100).unwrap();
     let has_completed = events.iter().any(|e| {
-        e.event_type == "task.completed"
-            && e.task_id.as_deref() == Some(&task_id.to_string())
+        e.event_type == "task.completed" && e.task_id.as_deref() == Some(&task_id.to_string())
     });
     assert!(
         has_completed,
@@ -768,12 +765,7 @@ fn audit_record_and_retrieve() {
         Some("audit-test-1"),
         json!({"exit_code": 0}),
     );
-    vasal_core::audit::record(
-        &store,
-        "agent.started",
-        None,
-        json!({"version": "0.1.0"}),
-    );
+    vasal_core::audit::record(&store, "agent.started", None, json!({"version": "0.1.0"}));
 
     let events = store.pending_audit_events(100).unwrap();
     assert_eq!(events.len(), 3);

@@ -7,9 +7,7 @@
 //! correct for synchronous-only sidecars.
 
 use async_trait::async_trait;
-use vasal_protocol::sidecar::{
-    CancelResponse, HealthResponse, StatusResponse, SubmitResponse,
-};
+use vasal_protocol::sidecar::{CancelResponse, HealthResponse, StatusResponse, SubmitResponse};
 use vasal_protocol::ProtocolError;
 
 /// Handler trait for a Vasal sidecar.
@@ -45,10 +43,7 @@ pub trait SidecarHandler: Send + Sync + 'static {
     /// - [`SubmitResponse::Completed`] / [`SubmitResponse::Failed`] for
     ///   synchronous work.
     /// - [`SubmitResponse::Accepted`] for async work the agent will poll.
-    async fn submit(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<SubmitResponse, ProtocolError>;
+    async fn submit(&self, params: serde_json::Value) -> Result<SubmitResponse, ProtocolError>;
 
     /// Poll the status of an asynchronous task.
     ///

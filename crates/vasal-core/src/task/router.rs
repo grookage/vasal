@@ -41,31 +41,24 @@ async fn execute_oneshot(
     let start = Instant::now();
 
     // Resolve eager credentials.
-    let creds = match crate::credential::resolve_eager(
-        &exec.credentials,
-        http_client,
-        socket_dir,
-    )
-    .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return make_result(
-                exec.id,
-                TaskResultStatus::Failed,
-                None,
-                String::new(),
-                e.to_string(),
-                start.elapsed(),
-                Some(e.to_string()),
-            );
-        }
-    };
+    let creds =
+        match crate::credential::resolve_eager(&exec.credentials, http_client, socket_dir).await {
+            Ok(c) => c,
+            Err(e) => {
+                return make_result(
+                    exec.id,
+                    TaskResultStatus::Failed,
+                    None,
+                    String::new(),
+                    e.to_string(),
+                    start.elapsed(),
+                    Some(e.to_string()),
+                );
+            }
+        };
 
     match exec.executor {
-        Executor::Shell => {
-            shell::execute(exec, &creds, cancel).await
-        }
+        Executor::Shell => shell::execute(exec, &creds, cancel).await,
         Executor::Sidecar => {
             let target = exec.target.as_deref().unwrap_or("unknown");
             let method = exec.method.as_deref().unwrap_or("submit");
@@ -116,7 +109,10 @@ pub async fn route_task(
                 task_id,
                 TaskResultStatus::Success,
                 None,
-                format!("upgraded unit {} to {}", upgrade.unit_name, upgrade.target_version),
+                format!(
+                    "upgraded unit {} to {}",
+                    upgrade.unit_name, upgrade.target_version
+                ),
                 String::new(),
                 start.elapsed(),
                 None,
@@ -150,7 +146,10 @@ pub async fn route_task(
                     task_id,
                     TaskResultStatus::Success,
                     None,
-                    format!("self-upgrade to {} prepared — restart required", upgrade.target_version),
+                    format!(
+                        "self-upgrade to {} prepared — restart required",
+                        upgrade.target_version
+                    ),
                     String::new(),
                     start.elapsed(),
                     None,

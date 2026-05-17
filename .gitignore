@@ -11,7 +11,4 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
-docs/architecture.md
-docs/plan.md
-
 docs/**

@@ -45,40 +45,44 @@ pub async fn execute(
         debug!(chain_id = %chain_id, step = idx, "executing chain step");
 
         // Resolve credentials for this step.
-        let creds = match crate::credential::resolve_eager(
-            &step.task.credentials,
-            http_client,
-            socket_dir,
-        )
-        .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                let mut result = router::make_result(
-                    step.task.id,
-                    TaskResultStatus::Failed,
-                    None,
-                    String::new(),
-                    e.to_string(),
-                    std::time::Duration::ZERO,
-                    Some(e.to_string()),
-                );
-                result.chain_id = Some(chain_id);
-                result.step_index = Some(idx as u32);
-                results.push(result);
+        let creds =
+            match crate::credential::resolve_eager(&step.task.credentials, http_client, socket_dir)
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    let mut result = router::make_result(
+                        step.task.id,
+                        TaskResultStatus::Failed,
+                        None,
+                        String::new(),
+                        e.to_string(),
+                        std::time::Duration::ZERO,
+                        Some(e.to_string()),
+                    );
+                    result.chain_id = Some(chain_id);
+                    result.step_index = Some(idx as u32);
+                    results.push(result);
 
-                // Trigger rollback.
-                run_rollbacks(chain, &results, idx, http_client, socket_dir, store, &cancel).await;
-                return results;
-            }
-        };
+                    // Trigger rollback.
+                    run_rollbacks(
+                        chain,
+                        &results,
+                        idx,
+                        http_client,
+                        socket_dir,
+                        store,
+                        &cancel,
+                    )
+                    .await;
+                    return results;
+                }
+            };
 
         // Execute the step.
         let step_cancel = cancel.child_token();
         let mut result = match step.task.executor {
-            Executor::Shell => {
-                super::shell::execute(&step.task, &creds, step_cancel).await
-            }
+            Executor::Shell => super::shell::execute(&step.task, &creds, step_cancel).await,
             Executor::Sidecar => {
                 let target = step.task.target.as_deref().unwrap_or("unknown");
                 let method = step.task.method.as_deref().unwrap_or("submit");
@@ -105,7 +109,16 @@ pub async fn execute(
 
         if failed {
             info!(chain_id = %chain_id, step = idx, "chain step failed — initiating rollback");
-            run_rollbacks(chain, &results, idx, http_client, socket_dir, store, &cancel).await;
+            run_rollbacks(
+                chain,
+                &results,
+                idx,
+                http_client,
+                socket_dir,
+                store,
+                &cancel,
+            )
+            .await;
             return results;
         }
     }
@@ -172,9 +185,7 @@ async fn run_rollbacks(
 
             let rb_cancel = cancel.child_token();
             let result = match rollback_task.executor {
-                Executor::Shell => {
-                    super::shell::execute(rollback_task, &creds, rb_cancel).await
-                }
+                Executor::Shell => super::shell::execute(rollback_task, &creds, rb_cancel).await,
                 Executor::Sidecar => {
                     let target = rollback_task.target.as_deref().unwrap_or("unknown");
                     let method = rollback_task.method.as_deref().unwrap_or("submit");

@@ -53,23 +53,10 @@ pub async fn install(
     // 3. Extract to artifact cache.
     let install_dir = artifact_cache_dir.join(&unit.name);
     std::fs::create_dir_all(&install_dir)?;
-    let artifact_path = install_dir.join(format!("{}-{}.tar.gz", unit.name, unit.version));
-    std::fs::write(&artifact_path, &bytes)?;
 
-    // TODO: detect artifact type and extract accordingly.
-    // For now, assume tarball and extract with tar.
-    let status = tokio::process::Command::new("tar")
-        .args(["xzf", &artifact_path.to_string_lossy(), "-C", &install_dir.to_string_lossy()])
-        .status()
-        .await?;
-
-    if !status.success() {
-        return Err(crate::Error::Unit(format!(
-            "failed to extract artifact for {}: tar exited with {:?}",
-            unit.name,
-            status.code(),
-        )));
-    }
+    // Detect artifact type by URL extension and extract accordingly.
+    let url_lower = unit.artifact.url.to_lowercase();
+    extract_artifact(&url_lower, &bytes, &install_dir, &unit.name, &unit.version).await?;
 
     // 4. For sidecars: start the process.
     let mut row = unit_to_row(unit);
@@ -101,5 +88,121 @@ pub async fn install(
     tokio::task::spawn_blocking(move || store_clone.upsert_unit(&row)).await??;
 
     info!(unit = %unit.name, "unit installed successfully");
+    Ok(())
+}
+
+/// Detect artifact type by URL extension and extract to `install_dir`.
+///
+/// Supported formats:
+/// - `.tar.gz` / `.tgz` — gzip-compressed tarball
+/// - `.tar.xz` / `.txz` — xz-compressed tarball
+/// - `.tar.bz2` / `.tbz2` — bzip2-compressed tarball
+/// - `.deb` — Debian package (extracted via `dpkg-deb`)
+/// - `.zip` — ZIP archive
+/// - Anything else — treated as a raw binary, written as `<unit_name>`
+async fn extract_artifact(
+    url_lower: &str,
+    bytes: &[u8],
+    install_dir: &Path,
+    unit_name: &str,
+    version: &str,
+) -> crate::Result<()> {
+    if url_lower.ends_with(".tar.gz") || url_lower.ends_with(".tgz") {
+        let artifact_path = install_dir.join(format!("{unit_name}-{version}.tar.gz"));
+        std::fs::write(&artifact_path, bytes)?;
+        run_extract(
+            "tar",
+            &[
+                "xzf",
+                &artifact_path.to_string_lossy(),
+                "-C",
+                &install_dir.to_string_lossy(),
+            ],
+            unit_name,
+        )
+        .await
+    } else if url_lower.ends_with(".tar.xz") || url_lower.ends_with(".txz") {
+        let artifact_path = install_dir.join(format!("{unit_name}-{version}.tar.xz"));
+        std::fs::write(&artifact_path, bytes)?;
+        run_extract(
+            "tar",
+            &[
+                "xJf",
+                &artifact_path.to_string_lossy(),
+                "-C",
+                &install_dir.to_string_lossy(),
+            ],
+            unit_name,
+        )
+        .await
+    } else if url_lower.ends_with(".tar.bz2") || url_lower.ends_with(".tbz2") {
+        let artifact_path = install_dir.join(format!("{unit_name}-{version}.tar.bz2"));
+        std::fs::write(&artifact_path, bytes)?;
+        run_extract(
+            "tar",
+            &[
+                "xjf",
+                &artifact_path.to_string_lossy(),
+                "-C",
+                &install_dir.to_string_lossy(),
+            ],
+            unit_name,
+        )
+        .await
+    } else if url_lower.ends_with(".deb") {
+        let artifact_path = install_dir.join(format!("{unit_name}-{version}.deb"));
+        std::fs::write(&artifact_path, bytes)?;
+        // Extract .deb contents (data.tar) into install_dir.
+        run_extract(
+            "dpkg-deb",
+            &[
+                "--extract",
+                &artifact_path.to_string_lossy(),
+                &install_dir.to_string_lossy(),
+            ],
+            unit_name,
+        )
+        .await
+    } else if url_lower.ends_with(".zip") {
+        let artifact_path = install_dir.join(format!("{unit_name}-{version}.zip"));
+        std::fs::write(&artifact_path, bytes)?;
+        run_extract(
+            "unzip",
+            &[
+                "-o",
+                &artifact_path.to_string_lossy(),
+                "-d",
+                &install_dir.to_string_lossy(),
+            ],
+            unit_name,
+        )
+        .await
+    } else {
+        // Raw binary — write directly as the unit name and make executable.
+        let binary_path = install_dir.join(unit_name);
+        std::fs::write(&binary_path, bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))?;
+        }
+        debug!(unit = %unit_name, "installed as raw binary");
+        Ok(())
+    }
+}
+
+/// Run an extraction command and return an error if it fails.
+async fn run_extract(cmd: &str, args: &[&str], unit_name: &str) -> crate::Result<()> {
+    let status = tokio::process::Command::new(cmd)
+        .args(args)
+        .status()
+        .await?;
+
+    if !status.success() {
+        return Err(crate::Error::Unit(format!(
+            "failed to extract artifact for {unit_name}: {cmd} exited with {:?}",
+            status.code(),
+        )));
+    }
     Ok(())
 }

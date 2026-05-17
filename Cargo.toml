@@ -38,6 +38,10 @@ tonic = "0.12"
 prost = "0.13"
 tonic-build = "0.12"
 tokio-stream = "0.1"
+opentelemetry = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-client"] }
+tracing-opentelemetry = "0.32"
 
 vasal-protocol = { path = "crates/vasal-protocol" }
 vasal-sidecar-sdk = { path = "crates/vasal-sidecar-sdk" }

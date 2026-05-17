@@ -24,7 +24,7 @@ and self-upgrades with rollback. It ships as a single static binary (~5-10 MB).
 
 ## Architecture
 
-The full design is at notes/arch.md 
+> The full design is at notes/arch.md. 
 
 ### Component Map
 

@@ -34,7 +34,10 @@ pub fn unit_to_row(unit: &ManagedUnit) -> UnitRow {
         health: None,
         health_error: None,
         pid: None,
-        socket_path: unit.socket_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+        socket_path: unit
+            .socket_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned()),
         config_json: unit.config.as_ref().map(|c| c.to_string()),
         updated_at: crate::state::now_ms(),
     }

@@ -23,9 +23,7 @@ pub mod proto {
 }
 
 use proto::agent_dispatch_client::AgentDispatchClient;
-use proto::{
-    agent_message, control_plane_message, AgentHello, AgentMessage, ControlPlaneMessage,
-};
+use proto::{agent_message, control_plane_message, AgentHello, AgentMessage, ControlPlaneMessage};
 
 /// Maximum reconnect backoff.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -98,9 +96,9 @@ impl GrpcTransport {
                 agent_version: agent_version.to_owned(),
             })),
         };
-        tx.send(hello).await.map_err(|e| {
-            crate::Error::Transport(format!("failed to enqueue hello: {e}"))
-        })?;
+        tx.send(hello)
+            .await
+            .map_err(|e| crate::Error::Transport(format!("failed to enqueue hello: {e}")))?;
 
         // Open the bidirectional stream.
         let response = client
@@ -222,9 +220,9 @@ impl Transport for GrpcTransport {
             payload: Some(agent_message::Payload::TaskResult(json_bytes)),
         };
 
-        tx.send(msg).await.map_err(|e| {
-            crate::Error::Transport(format!("failed to send result via gRPC: {e}"))
-        })?;
+        tx.send(msg)
+            .await
+            .map_err(|e| crate::Error::Transport(format!("failed to send result via gRPC: {e}")))?;
 
         debug!(task_id = %result.task_id, "result sent via gRPC");
         Ok(())
