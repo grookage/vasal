@@ -1,24 +1,7 @@
-//! ebpf-observer — reference sidecar for kernel-level observation (DD-16).
+//! `ebpf-observer` — kernel-level observation sidecar using procfs.
 //!
-//! This sidecar provides kernel-level metrics through the standard sidecar
-//! protocol. On Linux, it reads directly from procfs and sysfs to surface
-//! network, I/O, and memory pressure metrics. Designed as a drop-in
-//! observer that works without elevated privileges or kernel module
-//! compilation.
-//!
-//! # Supported Probes (snapshot mode)
-//!
-//! | Probe | Source | Detects |
-//! |---|---|---|
-//! | tcp_retransmit | `/proc/net/snmp` | Network issues |
-//! | blk_io_latency | `/proc/diskstats` | Storage pressure |
-//! | oom_kill | `/proc/vmstat` | OOM events |
-//! | connection_rate | `/proc/net/tcp` | Connection count |
-//!
-//! # Platform Requirements
-//!
-//! - Linux: full metrics from procfs
-//! - Non-Linux: runs as a stub that reports "unsupported platform"
+//! Probes: `tcp_retransmit`, `blk_io_latency`, `oom_kill`, `connection_rate`.
+//! On non-Linux platforms, runs as a stub reporting "unsupported platform".
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -44,7 +27,6 @@ impl SidecarHandler for EbpfObserver {
 
     async fn health(&self) -> HealthResponse {
         let (status, error) = if cfg!(target_os = "linux") {
-            // Verify procfs is accessible.
             if std::path::Path::new("/proc/vmstat").exists() {
                 (HealthStatus::Ok, None)
             } else {
@@ -85,7 +67,6 @@ impl SidecarHandler for EbpfObserver {
     }
 }
 
-/// Handle a snapshot request — return current metric values.
 fn handle_snapshot(probes: &[String]) -> Result<SubmitResponse, ProtocolError> {
     #[cfg(not(target_os = "linux"))]
     {
@@ -128,9 +109,6 @@ fn handle_snapshot(probes: &[String]) -> Result<SubmitResponse, ProtocolError> {
     }
 }
 
-/// Handle an attach request — for procfs-based observation, this is
-/// effectively a no-op since we read on demand. Return Completed
-/// immediately to indicate probes are "active".
 fn handle_attach(probes: &[String]) -> Result<SubmitResponse, ProtocolError> {
     if !cfg!(target_os = "linux") {
         return Err(ProtocolError::new(
@@ -151,12 +129,8 @@ fn handle_attach(probes: &[String]) -> Result<SubmitResponse, ProtocolError> {
     })
 }
 
-// ── Linux procfs readers ───────────────────────────────────────────────────
-
 #[cfg(target_os = "linux")]
 fn read_tcp_retransmits() -> serde_json::Value {
-    // Read TCP retransmit counter from /proc/net/snmp.
-    // Format: lines like "Tcp: ... RetransSegs ..."
     match std::fs::read_to_string("/proc/net/snmp") {
         Ok(content) => {
             let mut header_fields = Vec::new();
@@ -198,10 +172,6 @@ fn read_tcp_retransmits() -> serde_json::Value {
 
 #[cfg(target_os = "linux")]
 fn read_diskstats() -> serde_json::Value {
-    // Read /proc/diskstats for I/O metrics.
-    // Fields: major minor name reads reads_merged sectors_read read_ms
-    //         writes writes_merged sectors_written write_ms io_in_progress
-    //         io_ms weighted_io_ms
     match std::fs::read_to_string("/proc/diskstats") {
         Ok(content) => {
             let mut disks = serde_json::Map::new();
@@ -211,7 +181,6 @@ fn read_diskstats() -> serde_json::Value {
                     continue;
                 }
                 let name = fields[2];
-                // Skip partitions (only report whole disks: sd*, vd*, nvme*n*)
                 if name.starts_with("loop") || name.starts_with("ram") {
                     continue;
                 }
@@ -244,7 +213,6 @@ fn read_diskstats() -> serde_json::Value {
 
 #[cfg(target_os = "linux")]
 fn read_oom_kills() -> serde_json::Value {
-    // Read OOM kill count from /proc/vmstat.
     match std::fs::read_to_string("/proc/vmstat") {
         Ok(content) => {
             let mut oom_kill = 0u64;
@@ -270,8 +238,6 @@ fn read_oom_kills() -> serde_json::Value {
 
 #[cfg(target_os = "linux")]
 fn read_tcp_connections() -> serde_json::Value {
-    // Count TCP connections by state from /proc/net/tcp.
-    // State field is at column index 3 (hex encoded).
     match std::fs::read_to_string("/proc/net/tcp") {
         Ok(content) => {
             let mut established = 0u64;
@@ -295,7 +261,6 @@ fn read_tcp_connections() -> serde_json::Value {
                 }
             }
 
-            // Also check /proc/net/tcp6 if available.
             if let Ok(content6) = std::fs::read_to_string("/proc/net/tcp6") {
                 for line in content6.lines().skip(1) {
                     let fields: Vec<&str> = line.split_whitespace().collect();

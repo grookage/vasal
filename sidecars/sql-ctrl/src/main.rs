@@ -1,23 +1,6 @@
 //! `sql-ctrl` — SQL query execution sidecar for the Vasal agent.
 //!
-//! Executes SQL queries dispatched by the control plane via the Vasal
-//! sidecar protocol. Currently supports SQLite via `rusqlite`; the
-//! architecture is designed for future extension to MySQL/Postgres.
-//!
-//! # Actions
-//!
-//! - `query`    — execute a SQL statement and return rows as JSON.
-//! - `exec`     — execute a SQL statement that modifies data (INSERT/UPDATE/DELETE).
-//! - `discover` — return schema information (table names, column metadata).
-//!
-//! # Usage
-//!
-//! ```bash
-//! sql-ctrl --dsn /path/to/database.db /run/vasal/sql-ctrl.sock
-//! ```
-//!
-//! The DSN (data source name) can also be supplied per-request in the
-//! task payload, overriding the default.
+//! Supports SQLite via `rusqlite`. Actions: `query`, `exec`, `discover`.
 
 use std::sync::{Arc, Mutex};
 
@@ -29,38 +12,22 @@ use vasal_protocol::sidecar::{HealthResponse, HealthStatus, SubmitResponse};
 use vasal_protocol::ProtocolError;
 use vasal_sidecar_sdk::{SidecarHandler, SidecarServer};
 
-/// Agent version, injected at compile time.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Default socket path.
 const DEFAULT_SOCKET: &str = "/run/vasal/sql-ctrl.sock";
 
-// ── Request types ──────────────────────────────────────────────────────────
-
-/// Parameters expected in a `submit` request.
 #[derive(Debug, Deserialize)]
 struct SqlParams {
-    /// Action to perform: "query", "exec", or "discover".
     action: String,
-    /// SQLite database path. Overrides the default DSN if provided.
     #[serde(default)]
     dsn: Option<String>,
-    /// SQL statement to execute (required for "query" and "exec").
     #[serde(default)]
     sql: Option<String>,
-    /// Positional bind parameters for the SQL statement.
     #[serde(default)]
     params: Vec<serde_json::Value>,
 }
 
-// ── Handler ────────────────────────────────────────────────────────────────
-
-/// The SQL sidecar handler.
 struct SqlCtrl {
-    /// Default DSN (database path) from CLI args.
     default_dsn: Option<String>,
-    /// Connection pool: one connection per DSN, protected by a mutex.
-    /// For SQLite, connections are cheap; we keep one per unique DSN.
     connections: Mutex<Vec<(String, Arc<Mutex<Connection>>)>>,
 }
 
@@ -72,21 +39,17 @@ impl SqlCtrl {
         }
     }
 
-    /// Get or open a connection to the given DSN.
     fn get_connection(&self, dsn: &str) -> Result<Arc<Mutex<Connection>>, ProtocolError> {
         let mut conns = self.connections.lock().unwrap();
 
-        // Check if we already have a connection for this DSN.
         if let Some(entry) = conns.iter().find(|(d, _)| d == dsn) {
             return Ok(Arc::clone(&entry.1));
         }
 
-        // Open a new connection.
         debug!(dsn = %dsn, "opening new SQLite connection");
         let conn = Connection::open(dsn).map_err(|e| {
             ProtocolError::internal_error(format!("failed to open database {dsn}: {e}"))
         })?;
-        // Enable WAL for better concurrent access.
         conn.execute_batch("PRAGMA journal_mode = WAL;").ok();
         conn.execute_batch("PRAGMA busy_timeout = 5000;").ok();
 
@@ -95,7 +58,6 @@ impl SqlCtrl {
         Ok(arc)
     }
 
-    /// Resolve the DSN: use the per-request override or the default.
     fn resolve_dsn(&self, request_dsn: Option<&str>) -> Result<String, ProtocolError> {
         request_dsn
             .map(String::from)
@@ -105,7 +67,6 @@ impl SqlCtrl {
             })
     }
 
-    /// Execute a read query and return rows as JSON.
     fn execute_query(
         &self,
         dsn: &str,
@@ -167,7 +128,6 @@ impl SqlCtrl {
         })
     }
 
-    /// Execute a write statement (INSERT/UPDATE/DELETE) and return affected rows.
     fn execute_write(
         &self,
         dsn: &str,
@@ -199,12 +159,10 @@ impl SqlCtrl {
         })
     }
 
-    /// Discover schema: list tables and their columns.
     fn execute_discover(&self, dsn: &str) -> Result<SubmitResponse, ProtocolError> {
         let conn_arc = self.get_connection(dsn)?;
         let conn = conn_arc.lock().unwrap();
 
-        // Get table list.
         let mut stmt = conn
             .prepare(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -217,7 +175,6 @@ impl SqlCtrl {
             .filter_map(|r| r.ok())
             .collect();
 
-        // Get column info for each table.
         let mut table_info = Vec::new();
         for table in &tables {
             let mut info_stmt = conn
@@ -270,7 +227,6 @@ impl SidecarHandler for SqlCtrl {
         "sql-ctrl"
     }
 
-    /// Health check: verify we can open the default database (if configured).
     async fn health(&self) -> HealthResponse {
         if let Some(dsn) = &self.default_dsn {
             match self.get_connection(dsn) {
@@ -302,7 +258,6 @@ impl SidecarHandler for SqlCtrl {
                 },
             }
         } else {
-            // No default DSN — healthy but idle.
             HealthResponse {
                 status: HealthStatus::Ok,
                 version: Some(VERSION.into()),
@@ -312,7 +267,6 @@ impl SidecarHandler for SqlCtrl {
         }
     }
 
-    /// Execute a SQL action.
     async fn submit(&self, params: serde_json::Value) -> Result<SubmitResponse, ProtocolError> {
         let p: SqlParams = serde_json::from_value(params)
             .map_err(|e| ProtocolError::invalid_params(e.to_string()))?;
@@ -325,12 +279,9 @@ impl SidecarHandler for SqlCtrl {
                     ProtocolError::invalid_params("missing 'sql' field for query action")
                 })?;
                 debug!(sql = %sql, dsn = %dsn, "executing query");
-                // Run on a blocking thread since rusqlite is synchronous.
                 let this_dsn = dsn.clone();
                 let this_sql = sql.to_owned();
                 let this_params = p.params.clone();
-                // We can't move `self` into spawn_blocking, so execute inline.
-                // rusqlite operations are typically fast enough for the async runtime.
                 self.execute_query(&this_dsn, &this_sql, &this_params)
             }
             "exec" => {
@@ -351,9 +302,6 @@ impl SidecarHandler for SqlCtrl {
     }
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-/// Convert JSON values to rusqlite-compatible bind parameters.
 fn to_rusqlite_params(values: &[serde_json::Value]) -> Vec<Box<dyn rusqlite::types::ToSql>> {
     values
         .iter()
@@ -377,9 +325,7 @@ fn to_rusqlite_params(values: &[serde_json::Value]) -> Vec<Box<dyn rusqlite::typ
         .collect()
 }
 
-/// Extract a value from a rusqlite row at the given index, returning a JSON value.
 fn row_value_at(row: &rusqlite::Row<'_>, idx: usize) -> serde_json::Value {
-    // Try integer first, then float, then string, then null.
     if let Ok(v) = row.get::<_, i64>(idx) {
         return serde_json::Value::Number(v.into());
     }
@@ -392,13 +338,10 @@ fn row_value_at(row: &rusqlite::Row<'_>, idx: usize) -> serde_json::Value {
         return serde_json::Value::String(v);
     }
     if let Ok(v) = row.get::<_, Vec<u8>>(idx) {
-        // Return blobs as base64-ish hex for now.
         return serde_json::Value::String(hex::encode(v));
     }
     serde_json::Value::Null
 }
-
-// ── Main ───────────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -408,7 +351,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    // Parse CLI: sql-ctrl [--dsn <path>] <socket_path>
     let args: Vec<String> = std::env::args().collect();
     let mut dsn: Option<String> = None;
     let mut socket_path = DEFAULT_SOCKET.to_owned();
@@ -442,7 +384,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let handler = SqlCtrl::new(dsn);
     let server = SidecarServer::new(handler, &socket_path);
 
-    // Shut down on SIGTERM or Ctrl-C.
     let shutdown = async {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("failed to register SIGTERM handler");
@@ -455,8 +396,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     server.run(shutdown).await?;
     Ok(())
 }
-
-// ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -545,7 +484,6 @@ mod tests {
             _ => panic!("expected Completed"),
         }
 
-        // Verify the insert persisted.
         let check = handler
             .execute_query(&dsn, "SELECT COUNT(*) as cnt FROM users", &[])
             .unwrap();

@@ -1,10 +1,4 @@
-//! Periodic heartbeat sender (DD-17).
-//!
-//! The agent sends a heartbeat to the control plane at a configurable interval.
-//! The payload includes agent identity, uptime, managed unit statuses (from the
-//! state store), and active task counts.
-//!
-//! Heartbeat failure is logged but does NOT affect task execution.
+//! Periodic heartbeat sender to the control plane.
 
 use std::time::{Duration, Instant};
 
@@ -19,10 +13,6 @@ use vasal_protocol::unit::UnitKind;
 use crate::config::RuntimeConfig;
 use crate::state::StateStore;
 
-/// Run the heartbeat sender loop.
-///
-/// Sends heartbeats at the interval specified in `RuntimeConfig`. The interval
-/// is hot-reloadable via the `runtime_rx` watch channel.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     agent_id: Uuid,
@@ -53,9 +43,8 @@ pub async fn run(
         let uptime_sec = started_at.elapsed().as_secs();
         let active_tasks = *active_tasks_rx.borrow();
 
-        // Build unit reports from state store.
-        let store_clone = store.clone();
-        let units = match tokio::task::spawn_blocking(move || store_clone.list_units()).await {
+        let s = store.clone();
+        let units = match tokio::task::spawn_blocking(move || s.list_units()).await {
             Ok(Ok(rows)) => rows
                 .into_iter()
                 .map(|r| UnitReport {

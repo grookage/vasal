@@ -1,9 +1,3 @@
-//! Task execution engine — routing, concurrency, and active task tracking.
-//!
-//! The [`TaskManager`] is the central coordinator: it receives tasks from the
-//! transport layer, routes them by type, manages concurrency via a semaphore,
-//! tracks active tasks for heartbeat reporting, and reports results.
-
 pub mod chain;
 pub mod continuous;
 pub mod router;
@@ -26,32 +20,18 @@ use crate::state::StateStore;
 
 /// Manages task lifecycle: routing, execution, concurrency, and cancellation.
 pub struct TaskManager {
-    /// Concurrency limiter for shell/sidecar execution.
     semaphore: Arc<Semaphore>,
-    /// Active task cancellation tokens, keyed by task ID.
     active_tasks: Arc<Mutex<HashMap<Uuid, ActiveTask>>>,
-    /// Watch sender for active task counts (consumed by heartbeat).
     counts_tx: watch::Sender<ActiveTaskCounts>,
-    /// HTTP client for credential resolution and result reporting.
     http_client: reqwest::Client,
-    /// Path to sidecar Unix sockets.
     socket_dir: PathBuf,
-    /// State store for audit/journal writes.
     store: StateStore,
-    /// Hot-reloadable runtime config.
     #[allow(dead_code)]
     runtime_rx: watch::Receiver<RuntimeConfig>,
-    /// Optional channel for forwarding results to the transport layer.
-    ///
-    /// When `Some`, completed task results are sent through this channel
-    /// for the main loop to report to the control plane. When `None`
-    /// (e.g. in tests), results are only recorded in the journal/audit.
     result_tx: Option<mpsc::Sender<TaskResult>>,
-    /// Global shutdown token.
     shutdown: CancellationToken,
 }
 
-/// Metadata about an active task.
 struct ActiveTask {
     cancel_token: CancellationToken,
     kind: TaskKindTag,
@@ -64,11 +44,6 @@ enum TaskKindTag {
 }
 
 impl TaskManager {
-    /// Create a new task manager.
-    ///
-    /// If `result_tx` is `Some`, completed results are forwarded to the
-    /// transport layer. Pass `None` in tests or when result reporting is
-    /// handled elsewhere.
     pub fn new(
         store: StateStore,
         http_client: reqwest::Client,
@@ -92,16 +67,11 @@ impl TaskManager {
         }
     }
 
-    /// Submit a task for execution.
-    ///
-    /// Routes the task by type and spawns it onto the Tokio runtime. The
-    /// returned `TaskResult` is sent through the provided oneshot channel
-    /// (or directly if the caller wants to await it).
+    /// Routes the task by type and spawns it onto the Tokio runtime.
     pub async fn submit(&self, task: Task) -> crate::Result<()> {
         let task_id = task.id();
         info!(task_id = %task_id, "task received");
 
-        // Record audit event.
         crate::audit::record(
             &self.store,
             crate::audit::event::TASK_RECEIVED,
@@ -117,8 +87,6 @@ impl TaskManager {
                 self.spawn_exec(exec).await?;
             }
             Task::Install(_) | Task::Upgrade(_) | Task::Remove(_) | Task::SelfUpgrade(_) => {
-                // Unit management and self-upgrade are handled by the
-                // respective modules. Route through the task router.
                 self.spawn_routed(task).await?;
             }
         }
@@ -126,7 +94,6 @@ impl TaskManager {
         Ok(())
     }
 
-    /// Spawn an exec task (oneshot or continuous).
     async fn spawn_exec(&self, exec: ExecTask) -> crate::Result<()> {
         let task_id = exec.id;
         let cancel_token = CancellationToken::new();
@@ -135,7 +102,6 @@ impl TaskManager {
             ExecKind::Continuous => TaskKindTag::Continuous,
         };
 
-        // Register as active.
         {
             let mut active = self.active_tasks.lock().await;
             active.insert(
@@ -158,7 +124,6 @@ impl TaskManager {
         let result_tx = self.result_tx.clone();
 
         tokio::spawn(async move {
-            // Acquire concurrency permit.
             let _permit = match semaphore.acquire().await {
                 Ok(p) => p,
                 Err(_) => {
@@ -177,14 +142,11 @@ impl TaskManager {
             )
             .await;
 
-            // Record result in journal.
             let journal_row = result_to_journal_row(&result);
-            let store_clone = store.clone();
+            let s = store.clone();
             let _ =
-                tokio::task::spawn_blocking(move || store_clone.record_task_result(&journal_row))
-                    .await;
+                tokio::task::spawn_blocking(move || s.record_task_result(&journal_row)).await;
 
-            // Record audit event.
             let event_type = match result.status {
                 vasal_protocol::task::TaskResultStatus::Success => {
                     crate::audit::event::TASK_COMPLETED
@@ -207,12 +169,10 @@ impl TaskManager {
                 serde_json::to_value(&result).unwrap_or_default(),
             );
 
-            // Forward result to transport layer.
             if let Some(tx) = &result_tx {
                 let _ = tx.send(result.clone()).await;
             }
 
-            // Deregister from active tasks.
             {
                 let mut active = active_tasks.lock().await;
                 active.remove(&task_id);
@@ -225,7 +185,6 @@ impl TaskManager {
         Ok(())
     }
 
-    /// Spawn a non-exec routed task (install, upgrade, remove, self_upgrade).
     async fn spawn_routed(&self, task: Task) -> crate::Result<()> {
         let task_id = task.id();
         let cancel_token = CancellationToken::new();
@@ -253,14 +212,11 @@ impl TaskManager {
             let result =
                 router::route_task(&task, &http_client, &socket_dir, &store, cancel_token).await;
 
-            // Journal + audit.
             let journal_row = result_to_journal_row(&result);
-            let store_clone = store.clone();
+            let s = store.clone();
             let _ =
-                tokio::task::spawn_blocking(move || store_clone.record_task_result(&journal_row))
-                    .await;
+                tokio::task::spawn_blocking(move || s.record_task_result(&journal_row)).await;
 
-            // Forward result to transport layer.
             if let Some(tx) = &result_tx {
                 let _ = tx.send(result).await;
             }
@@ -275,7 +231,6 @@ impl TaskManager {
         Ok(())
     }
 
-    /// Cancel a running task by its ID.
     async fn handle_cancel(&self, target_task_id: Uuid) {
         let active = self.active_tasks.lock().await;
         if let Some(task) = active.get(&target_task_id) {
@@ -286,17 +241,12 @@ impl TaskManager {
         }
     }
 
-    /// Get a receiver for active task counts (used by heartbeat).
     pub fn counts_rx(&self) -> watch::Receiver<ActiveTaskCounts> {
         self.counts_tx.subscribe()
     }
 
-    /// Submit a task chain for execution.
-    ///
-    /// Spawns the chain executor on the Tokio runtime. Each step runs
-    /// sequentially; on failure the configured rollback strategy is applied.
-    /// All step results are recorded in the journal and forwarded to the
-    /// transport layer (if `result_tx` is configured).
+    /// Spawns the chain executor. Each step runs sequentially; on failure the
+    /// configured rollback strategy is applied.
     pub async fn submit_chain(&self, chain: TaskChain) -> crate::Result<()> {
         let chain_id = chain.id;
         info!(chain_id = %chain_id, steps = chain.steps.len(), "chain received");
@@ -310,7 +260,6 @@ impl TaskManager {
 
         let cancel_token = CancellationToken::new();
 
-        // Register the chain as an active task (cancellable by chain_id).
         {
             let mut active = self.active_tasks.lock().await;
             active.insert(
@@ -332,7 +281,6 @@ impl TaskManager {
         let result_tx = self.result_tx.clone();
 
         tokio::spawn(async move {
-            // Acquire a concurrency permit for the entire chain.
             let _permit = match semaphore.acquire().await {
                 Ok(p) => p,
                 Err(_) => {
@@ -344,7 +292,6 @@ impl TaskManager {
             let results =
                 chain::execute(&chain, &http_client, &socket_dir, &store, cancel_token).await;
 
-            // Record and forward each step result.
             for result in &results {
                 let journal_row = result_to_journal_row(result);
                 let s = store.clone();
@@ -356,7 +303,6 @@ impl TaskManager {
                 }
             }
 
-            // Deregister chain from active tasks.
             {
                 let mut active = active_tasks.lock().await;
                 active.remove(&chain_id);
@@ -373,13 +319,11 @@ impl TaskManager {
         Ok(())
     }
 
-    /// Update the active task counts broadcast.
     async fn update_counts(&self) {
         update_counts_static(&self.active_tasks, &self.counts_tx).await;
     }
 }
 
-/// Static helper for updating counts from a spawned task.
 async fn update_counts_static(
     active: &Mutex<HashMap<Uuid, ActiveTask>>,
     tx: &watch::Sender<ActiveTaskCounts>,
@@ -400,7 +344,6 @@ async fn update_counts_static(
     });
 }
 
-/// Convert a `TaskResult` to a journal row for SQLite persistence.
 fn result_to_journal_row(result: &TaskResult) -> crate::state::TaskResultRow {
     crate::state::TaskResultRow {
         task_id: result.task_id.to_string(),

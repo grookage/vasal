@@ -1,11 +1,4 @@
-//! Task chain executor — sequential steps with rollback (DD-07a).
-//!
-//! A chain runs steps strictly in order. On failure, the agent applies the
-//! configured rollback strategy:
-//!
-//! - `rollback_all`: rollback the failed step, then all prior steps in
-//!   reverse order.
-//! - `rollback_failed`: rollback only the failed step, then abort.
+//! Task chain executor — sequential steps with rollback.
 
 use std::path::Path;
 
@@ -16,7 +9,6 @@ use vasal_protocol::task::*;
 use super::router;
 use crate::state::StateStore;
 
-/// Execute a task chain, returning a result for each step (including rollbacks).
 pub async fn execute(
     chain: &TaskChain,
     http_client: &reqwest::Client,
@@ -44,7 +36,6 @@ pub async fn execute(
 
         debug!(chain_id = %chain_id, step = idx, "executing chain step");
 
-        // Resolve credentials for this step.
         let creds =
             match crate::credential::resolve_eager(&step.task.credentials, http_client, socket_dir)
                 .await
@@ -64,7 +55,6 @@ pub async fn execute(
                     result.step_index = Some(idx as u32);
                     results.push(result);
 
-                    // Trigger rollback.
                     run_rollbacks(
                         chain,
                         &results,
@@ -79,7 +69,6 @@ pub async fn execute(
                 }
             };
 
-        // Execute the step.
         let step_cancel = cancel.child_token();
         let mut result = match step.task.executor {
             Executor::Shell => super::shell::execute(&step.task, &creds, step_cancel).await,
@@ -134,7 +123,6 @@ pub async fn execute(
     results
 }
 
-/// Run rollbacks according to the chain's failure strategy.
 async fn run_rollbacks(
     chain: &TaskChain,
     _results: &[TaskResult],
@@ -156,11 +144,9 @@ async fn run_rollbacks(
 
     let rollback_range: Vec<usize> = match chain.on_failure {
         RollbackStrategy::RollbackFailed => {
-            // Only rollback the failed step.
             vec![failed_step_idx]
         }
         RollbackStrategy::RollbackAll => {
-            // Rollback failed step, then all prior steps in reverse.
             (0..=failed_step_idx).rev().collect()
         }
     };
@@ -293,7 +279,7 @@ mod tests {
             steps: vec![
                 make_step("echo step1", Some("echo rollback1")),
                 make_step("exit 1", Some("echo rollback2")),
-                make_step("echo step3", None), // Should never run.
+                make_step("echo step3", None),
             ],
             on_failure: RollbackStrategy::RollbackFailed,
             tags: HashMap::new(),
@@ -305,7 +291,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let results = execute(&chain, &client, dir.path(), &store, cancel).await;
-        // Step 1 succeeds, step 2 fails. Step 3 never runs.
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].status, TaskResultStatus::Success);
         assert_eq!(results[1].status, TaskResultStatus::Failed);

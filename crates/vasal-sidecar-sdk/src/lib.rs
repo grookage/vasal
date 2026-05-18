@@ -1,13 +1,7 @@
-//! # vasal-sidecar-sdk
+//! Rust SDK for building Vasal sidecars.
 //!
-//! A Rust SDK for building Vasal sidecars.
-//!
-//! This crate provides the runtime scaffolding for a sidecar process:
-//!
-//! - Unix domain socket listener with graceful shutdown
-//! - 4-byte big-endian length-prefixed framing ([`codec`])
-//! - JSON-RPC 2.0 request dispatch ([`server`])
-//! - The [`SidecarHandler`] trait that sidecar authors implement ([`handler`])
+//! Provides Unix socket listening, length-prefixed framing, JSON-RPC 2.0
+//! dispatch, and the [`SidecarHandler`] trait that sidecar authors implement.
 //!
 //! # Quick Start
 //!

@@ -1,10 +1,4 @@
-//! Unit upgrade with rollback (DD-04).
-//!
-//! 1. Download new artifact, verify SHA-256.
-//! 2. Stop current version.
-//! 3. Install new version.
-//! 4. Start, health check.
-//! 5. On health failure → rollback (stop new, install old, start old).
+//! Unit upgrade with rollback.
 
 use std::path::Path;
 
@@ -14,7 +8,7 @@ use vasal_protocol::task::RollbackSpec;
 
 use crate::state::StateStore;
 
-/// Upgrade a managed unit.
+/// Upgrade a managed unit, rolling back on failure.
 #[allow(clippy::too_many_arguments)]
 pub async fn upgrade(
     unit_name: &str,
@@ -29,7 +23,6 @@ pub async fn upgrade(
 ) -> crate::Result<()> {
     info!(unit = %unit_name, target_version, "upgrading unit");
 
-    // 1. Download and verify new artifact.
     let resp = http_client.get(artifact_url).send().await?;
     if !resp.status().is_success() {
         return Err(crate::Error::Unit(format!(
@@ -48,28 +41,23 @@ pub async fn upgrade(
         });
     }
 
-    // 2. Look up current unit info.
-    let store_clone = store.clone();
+    let s = store.clone();
     let name = unit_name.to_owned();
-    let current = tokio::task::spawn_blocking(move || store_clone.get_unit(&name)).await??;
+    let current = tokio::task::spawn_blocking(move || s.get_unit(&name)).await??;
 
     let current = current
-        .ok_or_else(|| crate::Error::Unit(format!("unit {unit_name} not found in state store")))?;
+        .ok_or_else(|| crate::Error::Unit(format!("unit not found: {unit_name}")))?;
 
-    // 3. Stop current version (if sidecar with PID).
     if let Some(pid) = current.pid {
         info!(unit = %unit_name, pid, "stopping current version");
-        // Send SIGTERM via kill command.
         let _ = tokio::process::Command::new("kill")
             .arg("-TERM")
             .arg(pid.to_string())
             .status()
             .await;
-        // Give it a moment to stop.
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 
-    // 4. Install new version.
     let install_dir = artifact_cache_dir.join(unit_name);
     std::fs::create_dir_all(&install_dir)?;
     let artifact_path = install_dir.join(format!("{unit_name}-{target_version}.tar.gz"));
@@ -87,7 +75,7 @@ pub async fn upgrade(
 
     if !status.success() {
         if let Some(rb) = rollback {
-            warn!(unit = %unit_name, "extraction failed — attempting rollback to {}", rb.version);
+            warn!(unit = %unit_name, "extraction failed — rolling back to {}", rb.version);
             perform_rollback(
                 unit_name,
                 rb,
@@ -103,7 +91,6 @@ pub async fn upgrade(
         )));
     }
 
-    // 5. Start new version (if sidecar).
     let mut updated_row = current.clone();
     updated_row.version = target_version.to_owned();
     updated_row.updated_at = crate::state::now_ms();
@@ -122,11 +109,9 @@ pub async fn upgrade(
             updated_row.state = "running".into();
             info!(unit = %unit_name, version = %target_version, "new version started");
 
-            // 5a. Health check the new version — give it up to 10 seconds.
             let healthy = super::health::probe_sidecar(socket_dir, unit_name, 10).await;
             if !healthy {
-                warn!(unit = %unit_name, "new version failed health check — rolling back");
-                // Kill the new version.
+                warn!(unit = %unit_name, "health check failed — rolling back");
                 let _ = tokio::process::Command::new("kill")
                     .arg("-TERM")
                     .arg(updated_row.pid.unwrap_or(0).to_string())
@@ -146,21 +131,20 @@ pub async fn upgrade(
                     .await?;
                 }
                 return Err(crate::Error::Unit(format!(
-                    "new version of {unit_name} failed health check after upgrade",
+                    "health check failed after upgrade: {unit_name}",
                 )));
             }
         }
     }
 
-    // 6. Persist updated state.
-    let store_clone = store.clone();
-    tokio::task::spawn_blocking(move || store_clone.upsert_unit(&updated_row)).await??;
+    let s = store.clone();
+    tokio::task::spawn_blocking(move || s.upsert_unit(&updated_row)).await??;
 
     info!(unit = %unit_name, version = %target_version, "upgrade completed");
     Ok(())
 }
 
-/// Download, verify, extract, and start the rollback version of a unit.
+/// Roll back to a previous version.
 async fn perform_rollback(
     unit_name: &str,
     rollback: &RollbackSpec,
@@ -169,13 +153,8 @@ async fn perform_rollback(
     store: &StateStore,
     http_client: &reqwest::Client,
 ) -> crate::Result<()> {
-    info!(
-        unit = %unit_name,
-        rollback_version = %rollback.version,
-        "downloading rollback artifact",
-    );
+    info!(unit = %unit_name, rollback_version = %rollback.version, "downloading rollback artifact");
 
-    // 1. Download rollback artifact.
     let resp = http_client.get(&rollback.artifact.url).send().await?;
     if !resp.status().is_success() {
         return Err(crate::Error::Unit(format!(
@@ -186,7 +165,6 @@ async fn perform_rollback(
     }
     let rb_bytes = resp.bytes().await?;
 
-    // 2. Verify SHA-256.
     let actual_sha256 = hex::encode(Sha256::digest(&rb_bytes));
     if actual_sha256 != rollback.artifact.sha256 {
         return Err(crate::Error::Sha256Mismatch {
@@ -195,7 +173,6 @@ async fn perform_rollback(
         });
     }
 
-    // 3. Extract rollback artifact.
     let install_dir = artifact_cache_dir.join(unit_name);
     std::fs::create_dir_all(&install_dir)?;
     let rb_path = install_dir.join(format!("{unit_name}-{}.tar.gz", rollback.version));
@@ -217,10 +194,9 @@ async fn perform_rollback(
         )));
     }
 
-    // 4. Start rollback version (if sidecar).
-    let store_clone = store.clone();
+    let s = store.clone();
     let name = unit_name.to_owned();
-    let current = tokio::task::spawn_blocking(move || store_clone.get_unit(&name)).await??;
+    let current = tokio::task::spawn_blocking(move || s.get_unit(&name)).await??;
 
     if let Some(mut row) = current {
         row.version = rollback.version.clone();
@@ -238,16 +214,12 @@ async fn perform_rollback(
 
                 row.pid = Some(child.id().unwrap_or(0));
                 row.state = "running".into();
-                info!(
-                    unit = %unit_name,
-                    version = %rollback.version,
-                    "rollback version started",
-                );
+                info!(unit = %unit_name, version = %rollback.version, "rollback version started");
             }
         }
 
-        let store_clone = store.clone();
-        tokio::task::spawn_blocking(move || store_clone.upsert_unit(&row)).await??;
+        let s = store.clone();
+        tokio::task::spawn_blocking(move || s.upsert_unit(&row)).await??;
     }
 
     info!(unit = %unit_name, version = %rollback.version, "rollback completed");

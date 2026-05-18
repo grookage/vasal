@@ -1,11 +1,4 @@
-//! Structured audit trail — local persistence and batched forwarding (DD-09).
-//!
-//! Every significant agent event (task received, started, completed, sidecar
-//! installed, credential fetched, etc.) is appended to the local SQLite
-//! `audit_log` table and forwarded to the control plane via batched HTTP POST.
-//!
-//! Forwarding is best-effort with retry and backoff. The local store survives
-//! agent restarts, so events are never lost — only delayed.
+//! Structured audit trail with local persistence and batched forwarding.
 
 use std::time::Duration;
 
@@ -16,7 +9,6 @@ use tracing::{debug, error, info, warn};
 use crate::config::RuntimeConfig;
 use crate::state::{AuditRow, StateStore};
 
-/// Audit event types emitted by the agent.
 pub mod event {
     pub const TASK_RECEIVED: &str = "task.received";
     pub const TASK_STARTED: &str = "task.started";
@@ -39,11 +31,6 @@ pub mod event {
     pub const AGENT_SHUTDOWN: &str = "agent.shutdown";
 }
 
-/// Append an audit event to the local store.
-///
-/// This is a synchronous write (via `spawn_blocking` is the caller's
-/// responsibility if on an async context). Prefer calling from synchronous
-/// task-completion paths.
 pub fn record(
     store: &StateStore,
     event_type: &str,
@@ -62,11 +49,6 @@ pub fn record(
     }
 }
 
-/// Run the audit forwarder background loop.
-///
-/// Periodically reads un-forwarded events from the local store, batches
-/// them, and POSTs to the audit endpoint. On success, marks them forwarded.
-/// On failure, backs off and retries.
 pub async fn run_forwarder(
     store: StateStore,
     endpoint: String,
@@ -87,7 +69,6 @@ pub async fn run_forwarder(
         tokio::select! {
             biased;
             () = shutdown.cancelled() => {
-                // Final flush attempt before exit.
                 let _ = flush_once(&store, &endpoint, &http_client, batch_size).await;
                 info!("audit forwarder stopped");
                 return;
@@ -111,16 +92,15 @@ pub async fn run_forwarder(
     }
 }
 
-/// Flush one batch of un-forwarded events.
 async fn flush_once(
     store: &StateStore,
     endpoint: &str,
     client: &reqwest::Client,
     batch_size: usize,
 ) -> crate::Result<usize> {
-    let store_clone = store.clone();
+    let s = store.clone();
     let events =
-        tokio::task::spawn_blocking(move || store_clone.pending_audit_events(batch_size)).await??;
+        tokio::task::spawn_blocking(move || s.pending_audit_events(batch_size)).await??;
 
     if events.is_empty() {
         return Ok(0);
@@ -129,7 +109,6 @@ async fn flush_once(
     let count = events.len();
     let ids: Vec<i64> = events.iter().filter_map(|e| e.id).collect();
 
-    // Build JSON payload.
     let payload: Vec<serde_json::Value> = events
         .iter()
         .map(|e| {
@@ -152,9 +131,8 @@ async fn flush_once(
         )));
     }
 
-    // Mark forwarded.
-    let store_clone = store.clone();
-    tokio::task::spawn_blocking(move || store_clone.mark_forwarded(&ids)).await??;
+    let s = store.clone();
+    tokio::task::spawn_blocking(move || s.mark_forwarded(&ids)).await??;
 
     Ok(count)
 }

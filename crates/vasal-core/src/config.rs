@@ -1,14 +1,9 @@
-//! Agent configuration — TOML parsing, validation, and hot-reload (DD-18).
-//!
-//! The agent reads `/etc/vasal/config.toml` (or a path given via `--config`).
-//! On `SIGHUP`, hot-reloadable fields are re-applied without restarting.
+//! Agent configuration: TOML parsing, validation, and hot-reload.
 
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use tracing::{info, warn};
-
-// ── Top-level config ───────────────────────────────────────────────────────
 
 /// Complete agent configuration, deserialized from TOML.
 #[derive(Debug, Clone, Deserialize)]
@@ -49,66 +44,50 @@ impl Config {
     }
 
     /// Validate configuration for common misconfigurations.
-    ///
-    /// Returns a list of warnings and errors. Errors indicate the agent
-    /// will likely fail to start; warnings indicate sub-optimal but
-    /// functional configurations.
     pub fn lint(&self) -> Vec<ConfigLint> {
         let mut results = Vec::new();
 
-        // Auth disabled
         if self.auth.provider.is_empty() || self.auth.provider == "none" {
             results.push(ConfigLint {
                 severity: LintSeverity::Warning,
-                message: "auth.provider is disabled — the agent will run unauthenticated. \
-                          Set auth.provider to an auth endpoint for production deployments."
-                    .into(),
+                message: "auth disabled, running unauthenticated".into(),
             });
         }
 
-        // Transport config mismatch
         match self.transport.mode {
             TransportMode::Poll if self.transport.poll.is_none() => {
                 results.push(ConfigLint {
                     severity: LintSeverity::Error,
-                    message: "transport.mode = \"poll\" but [transport.poll] section is missing"
-                        .into(),
+                    message: "transport.mode=poll but [transport.poll] missing".into(),
                 });
             }
             TransportMode::Grpc if self.transport.grpc.is_none() => {
                 results.push(ConfigLint {
                     severity: LintSeverity::Error,
-                    message: "transport.mode = \"grpc\" but [transport.grpc] section is missing"
-                        .into(),
+                    message: "transport.mode=grpc but [transport.grpc] missing".into(),
                 });
             }
             _ => {}
         }
 
-        // Zero concurrency
         if self.shell.max_concurrent == 0 {
             results.push(ConfigLint {
                 severity: LintSeverity::Error,
-                message: "shell.max_concurrent is 0 — no tasks can execute".into(),
+                message: "shell.max_concurrent is 0".into(),
             });
         }
 
-        // Data dir existence
         if !self.agent.data_dir.exists() {
             results.push(ConfigLint {
                 severity: LintSeverity::Warning,
-                message: format!(
-                    "agent.data_dir {:?} does not exist — it will be created on startup",
-                    self.agent.data_dir,
-                ),
+                message: format!("agent.data_dir {:?} does not exist", self.agent.data_dir),
             });
         }
 
-        // Heartbeat endpoint validation
         if self.heartbeat.endpoint.is_empty() {
             results.push(ConfigLint {
                 severity: LintSeverity::Warning,
-                message: "heartbeat.endpoint is empty — heartbeats will fail".into(),
+                message: "heartbeat.endpoint empty".into(),
             });
         }
 
@@ -134,8 +113,6 @@ pub enum LintSeverity {
     Warning,
 }
 
-// ── Runtime (hot-reloadable) config ────────────────────────────────────────
-
 /// Subset of configuration that can be changed via `SIGHUP` without restart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeConfig {
@@ -147,65 +124,39 @@ pub struct RuntimeConfig {
     pub audit_flush_interval_sec: u64,
 }
 
+macro_rules! log_field_change {
+    ($old:expr, $new:expr, $field:ident) => {
+        if $old.$field != $new.$field {
+            info!(old = ?$old.$field, new = ?$new.$field, concat!(stringify!($field), " changed"));
+        }
+    };
+}
+
 /// Diff two runtime configs and log what changed.
 pub fn log_config_diff(old: &RuntimeConfig, new: &RuntimeConfig) {
-    if old.log_level != new.log_level {
-        info!(old = %old.log_level, new = %new.log_level, "log_level changed");
-    }
-    if old.max_concurrent != new.max_concurrent {
-        info!(
-            old = old.max_concurrent,
-            new = new.max_concurrent,
-            "max_concurrent changed"
-        );
-    }
-    if old.heartbeat_interval_sec != new.heartbeat_interval_sec {
-        info!(
-            old = old.heartbeat_interval_sec,
-            new = new.heartbeat_interval_sec,
-            "heartbeat_interval_sec changed",
-        );
-    }
-    if old.health_check_interval_sec != new.health_check_interval_sec {
-        info!(
-            old = old.health_check_interval_sec,
-            new = new.health_check_interval_sec,
-            "health_check_interval_sec changed",
-        );
-    }
-    if old.audit_batch_size != new.audit_batch_size {
-        info!(
-            old = old.audit_batch_size,
-            new = new.audit_batch_size,
-            "audit_batch_size changed"
-        );
-    }
-    if old.audit_flush_interval_sec != new.audit_flush_interval_sec {
-        info!(
-            old = old.audit_flush_interval_sec,
-            new = new.audit_flush_interval_sec,
-            "audit_flush_interval_sec changed",
-        );
-    }
+    log_field_change!(old, new, log_level);
+    log_field_change!(old, new, max_concurrent);
+    log_field_change!(old, new, heartbeat_interval_sec);
+    log_field_change!(old, new, health_check_interval_sec);
+    log_field_change!(old, new, audit_batch_size);
+    log_field_change!(old, new, audit_flush_interval_sec);
+}
+
+macro_rules! warn_if_changed {
+    ($old:expr, $new:expr, $($accessor:ident).+ , $name:expr) => {
+        if $old.$($accessor).+ != $new.$($accessor).+ {
+            warn!(concat!($name, " changed — restart required"));
+        }
+    };
 }
 
 /// Warn about fields that require a restart to take effect.
 pub fn warn_restart_required(old: &Config, new: &Config) {
-    if old.transport.mode != new.transport.mode {
-        warn!("transport.mode changed — restart required");
-    }
-    if old.agent.data_dir != new.agent.data_dir {
-        warn!("agent.data_dir changed — restart required");
-    }
-    if old.agent.socket_dir != new.agent.socket_dir {
-        warn!("agent.socket_dir changed — restart required");
-    }
-    if old.auth.provider != new.auth.provider {
-        warn!("auth.provider changed — restart required");
-    }
+    warn_if_changed!(old, new, transport.mode, "transport.mode");
+    warn_if_changed!(old, new, agent.data_dir, "agent.data_dir");
+    warn_if_changed!(old, new, agent.socket_dir, "agent.socket_dir");
+    warn_if_changed!(old, new, auth.provider, "auth.provider");
 }
-
-// ── Section configs ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
@@ -298,9 +249,6 @@ pub struct UnitsConfig {
 }
 
 /// OpenTelemetry export configuration.
-///
-/// Requires the `otel` compile-time feature to have any effect.  When the
-/// feature is absent, the section is parsed but ignored (with a warning).
 #[derive(Debug, Clone, Deserialize)]
 pub struct TelemetryConfig {
     /// Whether OTel export is enabled (default: `false`).
@@ -323,8 +271,6 @@ impl Default for TelemetryConfig {
         }
     }
 }
-
-// ── Defaults ───────────────────────────────────────────────────────────────
 
 mod defaults {
     use std::path::PathBuf;

@@ -1,10 +1,4 @@
 //! JSON-RPC 2.0 wire format types.
-//!
-//! These types represent the on-the-wire structure of JSON-RPC 2.0 messages
-//! used for agent-to-sidecar IPC over Unix domain sockets.
-//!
-//! See the [JSON-RPC 2.0 specification](https://www.jsonrpc.org/specification)
-//! for the full protocol description.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -12,33 +6,17 @@ use std::fmt;
 /// The JSON-RPC protocol version string, always `"2.0"`.
 pub const JSONRPC_VERSION: &str = "2.0";
 
-// ── Request ────────────────────────────────────────────────────────────────
-
 /// A JSON-RPC 2.0 request message.
-///
-/// ```json
-/// {
-///   "jsonrpc": "2.0",
-///   "method": "submit",
-///   "params": { "script": "echo hello" },
-///   "id": 1
-/// }
-/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Request {
-    /// Protocol version — must be `"2.0"`.
     pub jsonrpc: String,
-    /// Method name to invoke.
     pub method: String,
-    /// Method parameters. `None` for parameterless calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
-    /// Request identifier, echoed back in the response.
     pub id: RequestId,
 }
 
 impl Request {
-    /// Construct a new JSON-RPC 2.0 request.
     pub fn new(
         method: impl Into<String>,
         params: Option<serde_json::Value>,
@@ -53,27 +31,20 @@ impl Request {
     }
 }
 
-// ── Response ───────────────────────────────────────────────────────────────
-
 /// A JSON-RPC 2.0 response message.
 ///
 /// Per the spec, exactly one of `result` or `error` is present.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Response {
-    /// Protocol version — always `"2.0"`.
     pub jsonrpc: String,
-    /// The result value on success.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
-    /// The error object on failure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorObject>,
-    /// Echoed request identifier.
     pub id: RequestId,
 }
 
 impl Response {
-    /// Construct a success response.
     pub fn success(id: RequestId, result: serde_json::Value) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION.to_owned(),
@@ -83,7 +54,6 @@ impl Response {
         }
     }
 
-    /// Construct an error response.
     pub fn error(id: RequestId, error: ErrorObject) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION.to_owned(),
@@ -93,37 +63,25 @@ impl Response {
         }
     }
 
-    /// Returns `true` if this response indicates success (no error object).
     pub fn is_success(&self) -> bool {
         self.error.is_none()
     }
 }
 
-// ── ErrorObject ────────────────────────────────────────────────────────────
-
-/// JSON-RPC 2.0 error object, carried in [`Response::error`].
-///
-/// See [`crate::error`] for the defined error code constants.
+/// JSON-RPC 2.0 error object.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ErrorObject {
-    /// Numeric error code (see [`crate::error`] for values).
     pub code: i32,
-    /// Short human-readable description.
     pub message: String,
-    /// Optional structured data with additional context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
 }
-
-// ── RequestId ──────────────────────────────────────────────────────────────
 
 /// Request identifier — integer or string per the JSON-RPC 2.0 spec.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RequestId {
-    /// Numeric identifier.
     Integer(i64),
-    /// String identifier.
     String(String),
 }
 

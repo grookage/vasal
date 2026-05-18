@@ -1,8 +1,4 @@
-//! SQLite state store — managed units, task journal, and audit log (DD-09).
-//!
-//! The store uses WAL mode for concurrent readers and a single writer.
-//! All operations are synchronous (rusqlite) and should be called from
-//! `spawn_blocking` when on the async runtime.
+//! SQLite state store for managed units, task journal, and audit log.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -26,7 +22,6 @@ impl StateStore {
         let db_path = data_dir.join("state.db");
         let conn = Connection::open(&db_path)?;
 
-        // Enable WAL mode for better concurrent read performance.
         conn.execute_batch("PRAGMA journal_mode = WAL;")?;
         conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
 
@@ -100,9 +95,6 @@ impl StateStore {
         Ok(())
     }
 
-    // ── Units ──────────────────────────────────────────────────────────
-
-    /// Insert or update a managed unit.
     pub fn upsert_unit(&self, unit: &UnitRow) -> crate::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -122,7 +114,6 @@ impl StateStore {
         Ok(())
     }
 
-    /// Look up a unit by name.
     pub fn get_unit(&self, name: &str) -> crate::Result<Option<UnitRow>> {
         let conn = self.conn.lock().unwrap();
         let row = conn
@@ -136,7 +127,6 @@ impl StateStore {
         Ok(row)
     }
 
-    /// List all managed units.
     pub fn list_units(&self) -> crate::Result<Vec<UnitRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -149,16 +139,12 @@ impl StateStore {
         Ok(rows)
     }
 
-    /// Remove a unit by name.
     pub fn remove_unit(&self, name: &str) -> crate::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM units WHERE name = ?1", params![name])?;
         Ok(())
     }
 
-    // ── Task Journal ───────────────────────────────────────────────────
-
-    /// Record a task execution result.
     pub fn record_task_result(&self, r: &TaskResultRow) -> crate::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -184,9 +170,6 @@ impl StateStore {
         Ok(deleted)
     }
 
-    // ── Audit Log ──────────────────────────────────────────────────────
-
-    /// Append an audit event.
     pub fn append_audit(&self, event: &AuditRow) -> crate::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -202,7 +185,6 @@ impl StateStore {
         Ok(())
     }
 
-    /// Fetch up to `limit` un-forwarded audit events.
     pub fn pending_audit_events(&self, limit: usize) -> crate::Result<Vec<AuditRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -215,13 +197,11 @@ impl StateStore {
         Ok(rows)
     }
 
-    /// Mark audit events as forwarded.
     pub fn mark_forwarded(&self, ids: &[i64]) -> crate::Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
         let conn = self.conn.lock().unwrap();
-        // Use a simple loop — batch sizes are small (audit.batch_size).
         let mut stmt = conn.prepare("UPDATE audit_log SET forwarded = 1 WHERE id = ?1")?;
         for id in ids {
             stmt.execute(params![id])?;
@@ -229,8 +209,6 @@ impl StateStore {
         Ok(())
     }
 }
-
-// ── Row types ──────────────────────────────────────────────────────────────
 
 /// Row representation of a managed unit in SQLite.
 #[derive(Debug, Clone)]
@@ -300,7 +278,6 @@ impl AuditRow {
     }
 }
 
-/// Return current Unix epoch in milliseconds.
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

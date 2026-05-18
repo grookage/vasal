@@ -1,14 +1,4 @@
-//! Per-task credential resolution (DD-06, DD-07c).
-//!
-//! Credentials are fetched on demand and discarded after use. The agent
-//! supports two resolution modes per credential:
-//!
-//! - **Eager**: agent fetches before execution, injects into execution context.
-//! - **Lazy**: agent forwards the [`CredentialRef`] to the sidecar as-is.
-//!
-//! Eager resolution supports two provider types:
-//! - **HTTP**: `GET` or `POST` to a credential endpoint.
-//! - **Sidecar**: JSON-RPC `submit` call to a credential-provider sidecar.
+//! Per-task credential resolution (eager and lazy modes).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -18,16 +8,9 @@ use vasal_protocol::credential::{CredentialProvider, CredentialRef, ResolveMode}
 
 use crate::task::sidecar as sidecar_client;
 
-/// Resolved credentials: a map of logical name to secret value.
 pub type ResolvedCredentials = HashMap<String, String>;
 
-/// Resolve all eager credentials for a task.
-///
-/// Lazy credentials are skipped — they will be forwarded to the sidecar
-/// as part of the request params.
-///
-/// Returns a map of `name -> secret_value` for injection into the
-/// execution context (environment variables for shell, params for sidecars).
+/// Resolve all eager credentials for a task, skipping lazy ones.
 pub async fn resolve_eager(
     refs: &[CredentialRef],
     http_client: &reqwest::Client,
@@ -48,14 +31,6 @@ pub async fn resolve_eager(
     Ok(creds)
 }
 
-/// Filter lazy credentials from a list, returning them for sidecar forwarding.
-pub fn filter_lazy(refs: &[CredentialRef]) -> Vec<&CredentialRef> {
-    refs.iter()
-        .filter(|c| c.resolve == ResolveMode::Lazy)
-        .collect()
-}
-
-/// Resolve a single eager credential.
 async fn resolve_one(
     cred_ref: &CredentialRef,
     http_client: &reqwest::Client,
@@ -71,7 +46,6 @@ async fn resolve_one(
     }
 }
 
-/// Fetch a credential via HTTP POST to the provider endpoint.
 async fn resolve_http(
     endpoint: &str,
     params: Option<&serde_json::Value>,
@@ -93,22 +67,17 @@ async fn resolve_http(
         )));
     }
 
-    // Expect the response body to contain the secret as a JSON string field
-    // named "value", or as plain text.
     let body = resp.text().await?;
 
-    // Try to parse as JSON with a "value" field first.
     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
         if let Some(val) = parsed.get("value").and_then(|v| v.as_str()) {
             return Ok(val.to_owned());
         }
     }
 
-    // Fall back to raw body.
     Ok(body)
 }
 
-/// Fetch a credential from a credential-provider sidecar.
 async fn resolve_sidecar(
     sidecar_name: &str,
     method: &str,
@@ -126,12 +95,10 @@ async fn resolve_sidecar(
 
     let response = sidecar_client::call_raw(&socket_path, method, Some(rpc_params)).await?;
 
-    // The sidecar should return the credential in a "value" field.
     if let Some(result) = response.result {
         if let Some(val) = result.get("value").and_then(|v| v.as_str()) {
             return Ok(val.to_owned());
         }
-        // Fall back to stringified result.
         return Ok(result.to_string());
     }
 
@@ -149,7 +116,10 @@ async fn resolve_sidecar(
 
 /// Collect lazy credential refs as JSON for forwarding to a sidecar.
 pub fn lazy_credentials_as_json(refs: &[CredentialRef]) -> serde_json::Value {
-    let lazy: Vec<&CredentialRef> = filter_lazy(refs);
+    let lazy: Vec<&CredentialRef> = refs
+        .iter()
+        .filter(|c| c.resolve == ResolveMode::Lazy)
+        .collect();
     if lazy.is_empty() {
         return serde_json::Value::Null;
     }
@@ -186,7 +156,10 @@ mod tests {
             },
         ];
 
-        let lazy = filter_lazy(&refs);
+        let lazy: Vec<&CredentialRef> = refs
+            .iter()
+            .filter(|c| c.resolve == ResolveMode::Lazy)
+            .collect();
         assert_eq!(lazy.len(), 1);
         assert_eq!(lazy[0].name, "TLS_CERT");
     }

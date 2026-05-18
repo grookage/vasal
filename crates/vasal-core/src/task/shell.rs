@@ -1,8 +1,4 @@
-//! Shell executor — the only built-in executor (DD-01).
-//!
-//! Spawns a shell process via `tokio::process::Command`, captures stdout and
-//! stderr, enforces timeouts, and injects resolved credentials as environment
-//! variables.
+//! Shell executor — spawns processes, captures output, enforces timeouts.
 
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -15,17 +11,8 @@ use vasal_protocol::task::{ExecTask, TaskResult, TaskResultStatus};
 use super::router::make_result;
 use crate::credential::ResolvedCredentials;
 
-/// Maximum captured output size per stream (16 MB).
-/// For larger outputs, the result is truncated with a marker. The full
-/// output is written to a temporary file and the path is included in the
-/// `error` field of the TaskResult.
 const MAX_OUTPUT_SIZE: usize = 16 * 1024 * 1024;
 
-/// Execute a shell task.
-///
-/// The `payload.script` field is expected to contain the shell command.
-/// Credentials are injected as environment variables — NEVER as command
-/// arguments (security: args are visible in `/proc` and `ps`).
 pub async fn execute(
     exec: &ExecTask,
     creds: &ResolvedCredentials,
@@ -34,7 +21,6 @@ pub async fn execute(
     let start = Instant::now();
     let task_id = exec.id;
 
-    // Extract script from payload.
     let script = match exec.payload.get("script").and_then(|v| v.as_str()) {
         Some(s) => s,
         None => {
@@ -52,24 +38,20 @@ pub async fn execute(
 
     debug!(task_id = %task_id, script_len = script.len(), "executing shell task");
 
-    // Build command.
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c").arg(script);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
 
-    // Inject credentials as environment variables.
     for (key, value) in creds {
         cmd.env(key, value);
     }
 
-    // Set working dir from payload if specified, otherwise use default.
     if let Some(dir) = exec.payload.get("working_dir").and_then(|v| v.as_str()) {
         cmd.current_dir(dir);
     }
 
-    // Spawn.
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -87,12 +69,9 @@ pub async fn execute(
 
     let timeout = Duration::from_millis(exec.timeout_ms);
 
-    // Take stdout/stderr handles before the select (to avoid ownership issues
-    // with `wait_with_output` which consumes `child`).
     let mut stdout_pipe = child.stdout.take().unwrap();
     let mut stderr_pipe = child.stderr.take().unwrap();
 
-    // Spawn readers for stdout and stderr.
     let stdout_handle = tokio::spawn(async move {
         let mut buf = Vec::new();
         let _ = tokio::io::AsyncReadExt::read_to_end(&mut stdout_pipe, &mut buf).await;
@@ -104,10 +83,7 @@ pub async fn execute(
         buf
     });
 
-    // Wait for completion, timeout, or cancellation.
     tokio::select! {
-        biased;
-
         () = cancel.cancelled() => {
             let _ = child.start_kill();
             let _ = child.wait().await;
@@ -182,16 +158,10 @@ pub async fn execute(
     }
 }
 
-/// Truncate output to MAX_OUTPUT_SIZE, spilling to a temporary file if needed.
-///
-/// If the output exceeds `MAX_OUTPUT_SIZE`, writes the full content to a
-/// temp file under `/tmp/vasal/` and returns the truncated prefix with a
-/// pointer to the file path.
 fn truncate_output(bytes: &[u8]) -> String {
     if bytes.len() <= MAX_OUTPUT_SIZE {
         String::from_utf8_lossy(bytes).into_owned()
     } else {
-        // Spill full output to a temp file.
         let spill_dir = std::path::Path::new("/tmp/vasal/output");
         let _ = std::fs::create_dir_all(spill_dir);
         let spill_path = spill_dir.join(format!("{}.out", uuid::Uuid::new_v4()));
@@ -265,7 +235,6 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        // Cancel after a short delay.
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(50)).await;
             cancel_clone.cancel();
@@ -296,7 +265,7 @@ mod tests {
             executor: Executor::Shell,
             target: None,
             method: None,
-            payload: json!({"command": "echo hi"}), // Wrong field name.
+            payload: json!({"command": "echo hi"}),
             interval_ms: None,
             timeout_ms: 5000,
             credentials: vec![],

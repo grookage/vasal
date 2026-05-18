@@ -1,7 +1,4 @@
 //! Vasal agent core library.
-//!
-//! This crate contains all agent logic: configuration, state management,
-//! task execution, transport, unit lifecycle, authentication, and audit.
 
 pub mod audit;
 pub mod auth;
@@ -19,7 +16,6 @@ pub mod unit;
 
 use thiserror::Error;
 
-/// Crate-level error type.
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("configuration: {0}")]

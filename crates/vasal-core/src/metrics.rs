@@ -1,46 +1,23 @@
-//! Lightweight agent metrics — atomic counters and Prometheus textfile export.
-//!
-//! The agent tracks internal counters and gauges using lock-free atomics.
-//! Metrics are included in heartbeat payloads and optionally written to a
-//! Prometheus-compatible textfile for node_exporter scraping.
+//! Atomic counters and Prometheus textfile export.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Agent-wide metrics singleton.
-///
-/// All fields are atomic — safe to read and increment from any thread
-/// without locking. Clone is cheap (Arc internals via static).
 pub struct Metrics {
-    /// Total tasks received since agent start.
     pub tasks_received: AtomicU64,
-    /// Total tasks completed successfully.
     pub tasks_succeeded: AtomicU64,
-    /// Total tasks failed.
     pub tasks_failed: AtomicU64,
-    /// Total tasks cancelled.
     pub tasks_cancelled: AtomicU64,
-    /// Total tasks timed out.
     pub tasks_timed_out: AtomicU64,
-    /// Total sidecar IPC calls made.
     pub sidecar_calls: AtomicU64,
-    /// Total sidecar IPC call failures.
     pub sidecar_call_failures: AtomicU64,
-    /// Total heartbeats sent.
     pub heartbeats_sent: AtomicU64,
-    /// Total heartbeat send failures.
     pub heartbeat_failures: AtomicU64,
-    /// Total audit events recorded.
     pub audit_events_recorded: AtomicU64,
-    /// Total audit events forwarded to CP.
     pub audit_events_forwarded: AtomicU64,
-    /// Total credential resolutions performed.
     pub credential_resolutions: AtomicU64,
-    /// Total credential resolution failures.
     pub credential_failures: AtomicU64,
-    /// Total config reloads via SIGHUP.
     pub config_reloads: AtomicU64,
-    /// Current number of active tasks (gauge).
     pub active_tasks: AtomicU64,
 }
 
@@ -51,7 +28,6 @@ impl Default for Metrics {
 }
 
 impl Metrics {
-    /// Create a new metrics instance with all counters at zero.
     pub const fn new() -> Self {
         Self {
             tasks_received: AtomicU64::new(0),
@@ -72,108 +48,61 @@ impl Metrics {
         }
     }
 
-    /// Export metrics as a Prometheus-compatible textfile string.
-    ///
-    /// Format follows the [Prometheus exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/).
     pub fn to_prometheus(&self) -> String {
+        use std::fmt::Write;
+
+        const COUNTERS: &[(&str, &str)] = &[
+            ("vasal_tasks_received_total", "Total tasks received"),
+            ("vasal_tasks_succeeded_total", "Total tasks completed successfully"),
+            ("vasal_tasks_failed_total", "Total tasks failed"),
+            ("vasal_tasks_cancelled_total", "Total tasks cancelled"),
+            ("vasal_tasks_timed_out_total", "Total tasks timed out"),
+            ("vasal_sidecar_calls_total", "Total sidecar IPC calls"),
+            ("vasal_sidecar_call_failures_total", "Total sidecar IPC failures"),
+            ("vasal_heartbeats_sent_total", "Total heartbeats sent"),
+            ("vasal_heartbeat_failures_total", "Total heartbeat failures"),
+            ("vasal_audit_events_recorded_total", "Total audit events recorded"),
+            ("vasal_audit_events_forwarded_total", "Total audit events forwarded"),
+            ("vasal_credential_resolutions_total", "Total credential resolutions"),
+            ("vasal_credential_failures_total", "Total credential resolution failures"),
+            ("vasal_config_reloads_total", "Total config reloads via SIGHUP"),
+        ];
+
+        let counter_fields: &[&AtomicU64] = &[
+            &self.tasks_received,
+            &self.tasks_succeeded,
+            &self.tasks_failed,
+            &self.tasks_cancelled,
+            &self.tasks_timed_out,
+            &self.sidecar_calls,
+            &self.sidecar_call_failures,
+            &self.heartbeats_sent,
+            &self.heartbeat_failures,
+            &self.audit_events_recorded,
+            &self.audit_events_forwarded,
+            &self.credential_resolutions,
+            &self.credential_failures,
+            &self.config_reloads,
+        ];
+
         let mut out = String::with_capacity(2048);
-        write_counter(
-            &mut out,
-            "vasal_tasks_received_total",
-            "Total tasks received",
-            self.tasks_received.load(Ordering::Relaxed),
-        );
-        write_counter(
-            &mut out,
-            "vasal_tasks_succeeded_total",
-            "Total tasks completed successfully",
-            self.tasks_succeeded.load(Ordering::Relaxed),
-        );
-        write_counter(
-            &mut out,
-            "vasal_tasks_failed_total",
-            "Total tasks failed",
-            self.tasks_failed.load(Ordering::Relaxed),
-        );
-        write_counter(
-            &mut out,
-            "vasal_tasks_cancelled_total",
-            "Total tasks cancelled",
-            self.tasks_cancelled.load(Ordering::Relaxed),
-        );
-        write_counter(
-            &mut out,
-            "vasal_tasks_timed_out_total",
-            "Total tasks timed out",
-            self.tasks_timed_out.load(Ordering::Relaxed),
-        );
-        write_counter(
-            &mut out,
-            "vasal_sidecar_calls_total",
-            "Total sidecar IPC calls",
-            self.sidecar_calls.load(Ordering::Relaxed),
-        );
-        write_counter(
-            &mut out,
-            "vasal_sidecar_call_failures_total",
-            "Total sidecar IPC failures",
-            self.sidecar_call_failures.load(Ordering::Relaxed),
-        );
-        write_counter(
-            &mut out,
-            "vasal_heartbeats_sent_total",
-            "Total heartbeats sent",
-            self.heartbeats_sent.load(Ordering::Relaxed),
-        );
-        write_counter(
-            &mut out,
-            "vasal_heartbeat_failures_total",
-            "Total heartbeat failures",
-            self.heartbeat_failures.load(Ordering::Relaxed),
-        );
-        write_counter(
-            &mut out,
-            "vasal_audit_events_recorded_total",
-            "Total audit events recorded",
-            self.audit_events_recorded.load(Ordering::Relaxed),
-        );
-        write_counter(
-            &mut out,
-            "vasal_audit_events_forwarded_total",
-            "Total audit events forwarded",
-            self.audit_events_forwarded.load(Ordering::Relaxed),
-        );
-        write_counter(
-            &mut out,
-            "vasal_credential_resolutions_total",
-            "Total credential resolutions",
-            self.credential_resolutions.load(Ordering::Relaxed),
-        );
-        write_counter(
-            &mut out,
-            "vasal_credential_failures_total",
-            "Total credential resolution failures",
-            self.credential_failures.load(Ordering::Relaxed),
-        );
-        write_counter(
-            &mut out,
-            "vasal_config_reloads_total",
-            "Total config reloads via SIGHUP",
-            self.config_reloads.load(Ordering::Relaxed),
-        );
-        write_gauge(
-            &mut out,
-            "vasal_active_tasks",
-            "Number of currently active tasks",
-            self.active_tasks.load(Ordering::Relaxed),
-        );
+
+        for (i, (name, help)) in COUNTERS.iter().enumerate() {
+            let value = counter_fields[i].load(Ordering::Relaxed);
+            let _ = writeln!(out, "# HELP {name} {help}");
+            let _ = writeln!(out, "# TYPE {name} counter");
+            let _ = writeln!(out, "{name} {value}");
+        }
+
+        let active = self.active_tasks.load(Ordering::Relaxed);
+        let _ = writeln!(out, "# HELP vasal_active_tasks Number of currently active tasks");
+        let _ = writeln!(out, "# TYPE vasal_active_tasks gauge");
+        let _ = writeln!(out, "vasal_active_tasks {active}");
+
         out
     }
 
-    /// Write the Prometheus textfile to the given directory.
-    ///
-    /// Writes to `<dir>/vasal.prom` atomically (write tmp, rename).
-    /// Intended for the Prometheus node_exporter textfile collector.
+    /// Write Prometheus textfile to `<dir>/vasal.prom` atomically.
     pub fn write_textfile(&self, dir: &Path) -> std::io::Result<()> {
         let content = self.to_prometheus();
         let target = dir.join("vasal.prom");
@@ -183,7 +112,7 @@ impl Metrics {
         Ok(())
     }
 
-    /// Return a JSON summary of current metrics for inclusion in heartbeats.
+    /// Return a JSON summary for inclusion in heartbeats.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "tasks_received": self.tasks_received.load(Ordering::Relaxed),
@@ -199,24 +128,7 @@ impl Metrics {
     }
 }
 
-/// Global metrics instance.
 pub static METRICS: Metrics = Metrics::new();
-
-/// Write a Prometheus counter metric entry.
-fn write_counter(out: &mut String, name: &str, help: &str, value: u64) {
-    use std::fmt::Write;
-    let _ = writeln!(out, "# HELP {name} {help}");
-    let _ = writeln!(out, "# TYPE {name} counter");
-    let _ = writeln!(out, "{name} {value}");
-}
-
-/// Write a Prometheus gauge metric entry.
-fn write_gauge(out: &mut String, name: &str, help: &str, value: u64) {
-    use std::fmt::Write;
-    let _ = writeln!(out, "# HELP {name} {help}");
-    let _ = writeln!(out, "# TYPE {name} gauge");
-    let _ = writeln!(out, "{name} {value}");
-}
 
 #[cfg(test)]
 mod tests {

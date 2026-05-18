@@ -1,8 +1,4 @@
 //! Sidecar dispatcher — IPC client for sidecar JSON-RPC calls.
-//!
-//! Connects to a sidecar's Unix domain socket, sends a length-prefixed
-//! JSON-RPC 2.0 request, reads the response, and handles sync/async modes
-//! with poll backoff (DD-14, DD-15).
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -23,16 +19,8 @@ use vasal_sidecar_sdk::codec::LengthPrefixCodec;
 use super::router::make_result;
 use crate::credential::{self, ResolvedCredentials};
 
-/// Poll backoff schedule per DD-15.
 const POLL_DELAYS_MS: &[u64] = &[0, 100, 200, 500, 1000];
 
-/// Execute a sidecar task.
-///
-/// 1. Connect to sidecar socket.
-/// 2. Build JSON-RPC `submit` request with payload + resolved credentials.
-/// 3. Send request, read response.
-/// 4. If synchronous (Completed/Failed) → return immediately.
-/// 5. If asynchronous (Accepted) → poll `status` with backoff until terminal.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute(
     task_id: Uuid,
@@ -48,24 +36,20 @@ pub async fn execute(
     let start = Instant::now();
     let socket_path = socket_dir.join(format!("{target}.sock"));
 
-    // Build params: merge payload with resolved credentials and lazy cred refs.
     let mut params = payload.clone();
     if let Some(obj) = params.as_object_mut() {
-        // Inject resolved (eager) credentials.
         if !resolved_creds.is_empty() {
             obj.insert(
                 "_credentials".into(),
                 serde_json::to_value(resolved_creds).unwrap_or_default(),
             );
         }
-        // Attach lazy credential refs for sidecar self-resolution.
         let lazy = credential::lazy_credentials_as_json(cred_refs);
         if !lazy.is_null() {
             obj.insert("_lazy_credentials".into(), lazy);
         }
     }
 
-    // Submit.
     let submit_resp = match call_raw(&socket_path, method, Some(params)).await {
         Ok(resp) => resp,
         Err(e) => {
@@ -81,7 +65,6 @@ pub async fn execute(
         }
     };
 
-    // Parse submit response.
     if let Some(err) = submit_resp.error {
         return make_result(
             task_id,
@@ -132,7 +115,6 @@ pub async fn execute(
         SubmitResponse::Accepted {
             task_id: sidecar_task_id,
         } => {
-            // Async mode — poll with backoff.
             poll_until_complete(
                 task_id,
                 &sidecar_task_id,
@@ -146,7 +128,6 @@ pub async fn execute(
     }
 }
 
-/// Poll a sidecar's `status` endpoint until a terminal state or timeout.
 async fn poll_until_complete(
     agent_task_id: Uuid,
     sidecar_task_id: &str,
@@ -159,9 +140,7 @@ async fn poll_until_complete(
     let mut poll_index: usize = 0;
 
     loop {
-        // Check timeout.
         if start.elapsed() >= timeout {
-            // Best-effort cancel on the sidecar.
             let _ = call_raw(
                 socket_path,
                 "cancel",
@@ -180,14 +159,12 @@ async fn poll_until_complete(
             );
         }
 
-        // Backoff delay.
         let delay_ms = POLL_DELAYS_MS
             .get(poll_index)
             .copied()
             .unwrap_or(*POLL_DELAYS_MS.last().unwrap());
         if delay_ms > 0 {
             tokio::select! {
-                biased;
                 () = cancel.cancelled() => {
                     let _ = call_raw(
                         socket_path,
@@ -205,7 +182,6 @@ async fn poll_until_complete(
             }
         }
 
-        // Poll status.
         let status_params = serde_json::to_value(StatusParams {
             task_id: sidecar_task_id.to_owned(),
         })
@@ -282,10 +258,7 @@ async fn poll_until_complete(
     }
 }
 
-/// Low-level: send a single JSON-RPC request to a sidecar socket and read the response.
-///
-/// This is a per-request connection (connect, send, recv, close). Unix socket
-/// connect is ~50us so no persistent connections are needed.
+/// Send a single JSON-RPC request to a sidecar socket and read the response.
 pub async fn call_raw(
     socket_path: &Path,
     method: &str,
@@ -300,7 +273,6 @@ pub async fn call_raw(
 
     let mut framed = Framed::new(stream, LengthPrefixCodec::new());
 
-    // Build and send request.
     let req = Request::new(method, params, 1i64);
     let payload = serde_json::to_vec(&req)?;
     framed
@@ -308,7 +280,6 @@ pub async fn call_raw(
         .await
         .map_err(|e| crate::Error::Transport(format!("failed to send to sidecar: {e}")))?;
 
-    // Read response.
     let frame = framed
         .next()
         .await

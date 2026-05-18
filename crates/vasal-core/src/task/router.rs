@@ -1,8 +1,4 @@
-//! Task routing — dispatch by task type and executor (DD-07b).
-//!
-//! The router examines the task's `type` field and delegates to the
-//! appropriate executor: shell, sidecar, chain, continuous, or the
-//! unit management / self-upgrade modules.
+//! Task routing — dispatch by task type and executor.
 
 use std::path::Path;
 use std::time::Instant;
@@ -14,7 +10,6 @@ use vasal_protocol::task::*;
 use super::{chain, continuous, shell, sidecar};
 use crate::state::StateStore;
 
-/// Execute an `exec` task (oneshot or continuous, shell or sidecar).
 pub async fn execute_exec(
     exec: &ExecTask,
     http_client: &reqwest::Client,
@@ -31,7 +26,6 @@ pub async fn execute_exec(
     }
 }
 
-/// Execute a single oneshot exec task.
 async fn execute_oneshot(
     exec: &ExecTask,
     http_client: &reqwest::Client,
@@ -40,7 +34,6 @@ async fn execute_oneshot(
 ) -> TaskResult {
     let start = Instant::now();
 
-    // Resolve eager credentials.
     let creds =
         match crate::credential::resolve_eager(&exec.credentials, http_client, socket_dir).await {
             Ok(c) => c,
@@ -78,7 +71,6 @@ async fn execute_oneshot(
     }
 }
 
-/// Route a non-exec task to the appropriate handler.
 pub async fn route_task(
     task: &Task,
     http_client: &reqwest::Client,
@@ -92,7 +84,6 @@ pub async fn route_task(
     match task {
         Task::Install(install) => {
             debug!(unit = %install.unit.name, "routing install task");
-            // Delegate to unit manager (Phase 5).
             make_result(
                 task_id,
                 TaskResultStatus::Success,
@@ -165,7 +156,6 @@ pub async fn route_task(
                 ),
             }
         }
-        // Exec and Cancel are handled directly by TaskManager.
         Task::Exec(_) | Task::Cancel(_) => {
             error!(task_id = %task_id, "exec/cancel routed through route_task — this is a bug");
             make_result(
@@ -181,7 +171,6 @@ pub async fn route_task(
     }
 }
 
-/// Execute a task chain.
 pub async fn execute_chain(
     task_chain: &TaskChain,
     http_client: &reqwest::Client,
@@ -192,7 +181,6 @@ pub async fn execute_chain(
     chain::execute(task_chain, http_client, socket_dir, store, cancel).await
 }
 
-/// Helper to construct a `TaskResult`.
 pub fn make_result(
     task_id: uuid::Uuid,
     status: TaskResultStatus,

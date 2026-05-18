@@ -1,16 +1,4 @@
-//! `echo-ctrl` — test sidecar for the Vasal agent.
-//!
-//! A minimal sidecar built on [`vasal_sidecar_sdk`] that echoes back whatever
-//! is submitted to it. Used as a test harness in integration tests and as a
-//! reference for sidecar authors.
-//!
-//! # Usage
-//!
-//! ```bash
-//! echo-ctrl /run/vasal/echo-ctrl.sock
-//! ```
-//!
-//! If no socket path is provided, defaults to `/run/vasal/echo-ctrl.sock`.
+//! `echo-ctrl` — test sidecar that echoes back submitted payloads.
 
 use async_trait::async_trait;
 use tracing::info;
@@ -18,15 +6,9 @@ use vasal_protocol::sidecar::{HealthResponse, HealthStatus, SubmitResponse};
 use vasal_protocol::ProtocolError;
 use vasal_sidecar_sdk::{SidecarHandler, SidecarServer};
 
-/// Agent version, injected at compile time.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Default socket path when none is provided via CLI.
 const DEFAULT_SOCKET: &str = "/run/vasal/echo-ctrl.sock";
 
-// ── Handler ────────────────────────────────────────────────────────────────
-
-/// The echo handler — reflects submitted payloads back as stdout.
 struct EchoHandler;
 
 #[async_trait]
@@ -35,7 +17,6 @@ impl SidecarHandler for EchoHandler {
         "echo-ctrl"
     }
 
-    /// Always healthy, always ready.
     async fn health(&self) -> HealthResponse {
         HealthResponse {
             status: HealthStatus::Ok,
@@ -45,10 +26,6 @@ impl SidecarHandler for EchoHandler {
         }
     }
 
-    /// Echo the submitted params back as pretty-printed JSON in stdout.
-    ///
-    /// This is a synchronous sidecar — every `submit` returns `Completed`
-    /// immediately.
     async fn submit(&self, params: serde_json::Value) -> Result<SubmitResponse, ProtocolError> {
         let stdout = serde_json::to_string_pretty(&params).unwrap_or_else(|_| params.to_string());
 
@@ -59,8 +36,6 @@ impl SidecarHandler for EchoHandler {
         })
     }
 }
-
-// ── Main ───────────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -78,7 +53,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let server = SidecarServer::new(EchoHandler, &socket_path);
 
-    // Shut down on SIGTERM or Ctrl-C.
     let shutdown = async {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("failed to register SIGTERM handler");

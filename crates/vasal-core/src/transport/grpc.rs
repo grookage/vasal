@@ -1,11 +1,4 @@
-//! gRPC stream transport — bidirectional task dispatch (DD-02).
-//!
-//! When `transport.mode = "grpc"`, the agent opens a bidirectional gRPC
-//! stream to the control plane. Tasks are pushed by the CP; results and
-//! heartbeats are sent back over the same stream.
-//!
-//! The transport automatically reconnects with exponential backoff on
-//! stream failure, and re-sends the `AgentHello` on each new connection.
+//! gRPC bidirectional stream transport for task dispatch.
 
 use std::time::Duration;
 
@@ -17,7 +10,6 @@ use vasal_protocol::task::{Task, TaskChain, TaskResult};
 
 use super::{ReceivedWork, Transport};
 
-/// Generated protobuf types and client stub.
 pub mod proto {
     tonic::include_proto!("vasal.v1");
 }
@@ -25,27 +17,16 @@ pub mod proto {
 use proto::agent_dispatch_client::AgentDispatchClient;
 use proto::{agent_message, control_plane_message, AgentHello, AgentMessage, ControlPlaneMessage};
 
-/// Maximum reconnect backoff.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
-/// Initial reconnect backoff.
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 
-/// Internal mutable state protected by a tokio Mutex.
-///
-/// `tonic::Streaming<T>` is `Send` but not `Sync`, so the entire mutable
-/// interior is wrapped in `tokio::sync::Mutex` to satisfy the `Transport:
-/// Sync` bound.
 struct GrpcInner {
     outbound_tx: Option<mpsc::Sender<AgentMessage>>,
     inbound_stream: Option<tonic::Streaming<ControlPlaneMessage>>,
     backoff: Duration,
 }
 
-/// gRPC bidirectional streaming transport.
-///
-/// Maintains a persistent stream to the CP. Tasks are received via the
-/// inbound half; results are sent via the outbound half. On disconnection,
-/// reconnects with exponential backoff.
+/// gRPC bidirectional streaming transport with automatic reconnection.
 pub struct GrpcTransport {
     endpoint: String,
     agent_id: String,
@@ -54,10 +35,6 @@ pub struct GrpcTransport {
 }
 
 impl GrpcTransport {
-    /// Create a new gRPC transport.
-    ///
-    /// Does NOT connect immediately — connection is established lazily on
-    /// the first call to `recv_tasks`.
     pub fn new(endpoint: String, agent_id: String, agent_version: String) -> Self {
         Self {
             endpoint,
@@ -71,7 +48,6 @@ impl GrpcTransport {
         }
     }
 
-    /// Establish a bidirectional stream to the CP.
     async fn connect(
         endpoint: &str,
         agent_id: &str,
@@ -86,10 +62,8 @@ impl GrpcTransport {
             .await
             .map_err(|e| crate::Error::Transport(format!("gRPC connect failed: {e}")))?;
 
-        // Create a channel for outbound messages.
         let (tx, rx) = mpsc::channel::<AgentMessage>(64);
 
-        // Send the hello message as the first frame.
         let hello = AgentMessage {
             payload: Some(agent_message::Payload::Hello(AgentHello {
                 agent_id: agent_id.to_owned(),
@@ -100,7 +74,6 @@ impl GrpcTransport {
             .await
             .map_err(|e| crate::Error::Transport(format!("failed to enqueue hello: {e}")))?;
 
-        // Open the bidirectional stream.
         let response = client
             .task_stream(ReceiverStream::new(rx))
             .await
@@ -112,7 +85,6 @@ impl GrpcTransport {
         Ok((inbound_stream, tx))
     }
 
-    /// Decode a `ControlPlaneMessage` into `ReceivedWork`.
     fn decode_work(msg: &ControlPlaneMessage) -> Option<ReceivedWork> {
         match &msg.payload {
             Some(control_plane_message::Payload::Task(bytes)) => {
@@ -148,13 +120,9 @@ impl GrpcTransport {
 
 #[async_trait]
 impl Transport for GrpcTransport {
-    /// Receive pending tasks from the CP via the gRPC stream.
-    ///
-    /// Blocks until at least one task arrives, reconnecting if needed.
     async fn recv_tasks(&self) -> crate::Result<Vec<ReceivedWork>> {
         let mut inner = self.inner.lock().await;
 
-        // Ensure we have an active stream.
         if inner.inbound_stream.is_none() || inner.outbound_tx.is_none() {
             match Self::connect(&self.endpoint, &self.agent_id, &self.agent_version).await {
                 Ok((stream, tx)) => {
@@ -170,7 +138,6 @@ impl Transport for GrpcTransport {
                         "gRPC connection failed — will retry",
                     );
                     inner.backoff = (backoff * 2).min(MAX_BACKOFF);
-                    // Drop the lock before sleeping.
                     drop(inner);
                     tokio::time::sleep(backoff).await;
                     return Ok(vec![]);
@@ -178,7 +145,6 @@ impl Transport for GrpcTransport {
             }
         }
 
-        // Read one message from the stream.
         let stream = inner.inbound_stream.as_mut().unwrap();
         match stream.message().await {
             Ok(Some(msg)) => {
@@ -190,7 +156,6 @@ impl Transport for GrpcTransport {
                 }
             }
             Ok(None) => {
-                // Stream ended gracefully.
                 info!("gRPC stream ended — will reconnect");
                 inner.inbound_stream = None;
                 inner.outbound_tx = None;
@@ -205,7 +170,6 @@ impl Transport for GrpcTransport {
         }
     }
 
-    /// Send a task result to the CP via the gRPC stream.
     async fn send_result(&self, result: &TaskResult) -> crate::Result<()> {
         let inner = self.inner.lock().await;
         let tx = inner
@@ -213,7 +177,7 @@ impl Transport for GrpcTransport {
             .as_ref()
             .ok_or_else(|| crate::Error::Transport("gRPC not connected".into()))?
             .clone();
-        drop(inner); // Release lock before the async send.
+        drop(inner);
 
         let json_bytes = serde_json::to_vec(result)?;
         let msg = AgentMessage {

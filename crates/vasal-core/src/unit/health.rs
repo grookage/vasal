@@ -1,8 +1,4 @@
-//! Periodic unit health checking (DD-17).
-//!
-//! For sidecars: calls the protocol-mandated `health()` IPC method.
-//! For packages: runs an optional health check shell command (exit 0 = healthy).
-//! Updates the state store; changes are reflected in the next heartbeat.
+//! Periodic unit health checking via IPC or shell commands.
 
 use std::path::Path;
 use std::time::Duration;
@@ -15,11 +11,7 @@ use vasal_protocol::sidecar::{HealthResponse, HealthStatus};
 use crate::config::RuntimeConfig;
 use crate::state::StateStore;
 
-/// Probe a single sidecar's health with retries over `timeout_sec` seconds.
-///
-/// Used during upgrades to verify the new version is healthy before
-/// committing. Returns `true` if the sidecar reports healthy within the
-/// timeout, `false` otherwise.
+/// Probe a sidecar's health with retries until `timeout_sec` elapses.
 pub async fn probe_sidecar(socket_dir: &Path, unit_name: &str, timeout_sec: u64) -> bool {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_sec);
     let mut attempt = 0u32;
@@ -42,9 +34,6 @@ pub async fn probe_sidecar(socket_dir: &Path, unit_name: &str, timeout_sec: u64)
 }
 
 /// Run the health check loop for all managed units.
-///
-/// Periodically iterates over all units in the state store and checks
-/// their health. Updates the store with the results.
 pub async fn run(
     store: StateStore,
     socket_dir: std::path::PathBuf,
@@ -58,7 +47,6 @@ pub async fn run(
         let interval = Duration::from_secs(interval_sec);
 
         tokio::select! {
-            biased;
             () = shutdown.cancelled() => {
                 info!("unit health checker stopped");
                 return;
@@ -66,8 +54,8 @@ pub async fn run(
             () = tokio::time::sleep(interval) => {}
         }
 
-        let store_clone = store.clone();
-        let units = match tokio::task::spawn_blocking(move || store_clone.list_units()).await {
+        let s = store.clone();
+        let units = match tokio::task::spawn_blocking(move || s.list_units()).await {
             Ok(Ok(u)) => u,
             Ok(Err(e)) => {
                 warn!(error = %e, "failed to list units for health check");
@@ -90,7 +78,6 @@ pub async fn run(
                 _ => continue,
             };
 
-            // Update state store if health changed.
             let changed = unit.health.as_deref() != Some(health)
                 || unit.health_error.as_deref() != health_error.as_deref();
 
@@ -107,15 +94,14 @@ pub async fn run(
                 updated.health_error = health_error;
                 updated.updated_at = crate::state::now_ms();
 
-                let store_clone = store.clone();
+                let s = store.clone();
                 let _ =
-                    tokio::task::spawn_blocking(move || store_clone.upsert_unit(&updated)).await;
+                    tokio::task::spawn_blocking(move || s.upsert_unit(&updated)).await;
             }
         }
     }
 }
 
-/// Check a sidecar's health via the IPC `health()` call.
 async fn check_sidecar(socket_dir: &Path, unit_name: &str) -> (&'static str, Option<String>) {
     let socket_path = super::socket_path_for(socket_dir, unit_name);
 
@@ -139,14 +125,12 @@ async fn check_sidecar(socket_dir: &Path, unit_name: &str) -> (&'static str, Opt
     }
 }
 
-/// Check a package's health by running its health check command (if any).
 async fn check_package(unit: &crate::state::UnitRow) -> (&'static str, Option<String>) {
     let config_json = match &unit.config_json {
         Some(c) => c,
-        None => return ("ok", None), // No health check configured.
+        None => return ("ok", None),
     };
 
-    // Look for a health_check.command in the unit config.
     let config: serde_json::Value = match serde_json::from_str(config_json) {
         Ok(v) => v,
         Err(_) => return ("ok", None),

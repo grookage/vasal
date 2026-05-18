@@ -1,15 +1,4 @@
-//! Agent self-upgrade with rollback (DD-08).
-//!
-//! # Upgrade Flow
-//!
-//! 1. Download new binary from artifact URL.
-//! 2. Verify SHA-256 digest.
-//! 3. Write `pending-upgrade.json` state file to `data_dir`.
-//! 4. Atomic rename: replace current binary with new one.
-//! 5. Restart (via `exec` or systemd).
-//! 6. New instance reads state file, reports result to CP, deletes file.
-//! 7. If new binary doesn't become healthy within timeout, the rollback
-//!    binary is restored.
+//! Agent self-upgrade with rollback.
 
 use std::path::{Path, PathBuf};
 
@@ -17,26 +6,17 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
 
-/// State file written before replacing the binary. The new instance reads
-/// this on startup to report the upgrade result.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PendingUpgrade {
-    /// Version we're upgrading to.
     pub target_version: String,
-    /// Version we're upgrading from.
     pub previous_version: String,
-    /// Path where the previous binary was backed up.
     pub rollback_path: PathBuf,
-    /// Unix timestamp when the upgrade was initiated.
     pub initiated_at: i64,
 }
 
 const STATE_FILE: &str = "pending-upgrade.json";
 
-/// Check if there's a pending upgrade from a prior restart.
-///
-/// Returns the state file contents if one exists, consuming (deleting) the
-/// file. The caller should report the upgrade result to the CP.
+/// Check if there's a pending upgrade from a prior restart, consuming the state file.
 pub fn check_pending(data_dir: &Path) -> Option<PendingUpgrade> {
     let path = data_dir.join(STATE_FILE);
     if !path.exists() {
@@ -47,7 +27,6 @@ pub fn check_pending(data_dir: &Path) -> Option<PendingUpgrade> {
         Ok(c) => c,
         Err(e) => {
             error!(error = %e, "failed to read pending-upgrade state file");
-            // Remove corrupt file to avoid boot loops.
             let _ = std::fs::remove_file(&path);
             return None;
         }
@@ -71,15 +50,7 @@ pub fn check_pending(data_dir: &Path) -> Option<PendingUpgrade> {
     }
 }
 
-/// Execute a self-upgrade.
-///
-/// 1. Downloads the artifact.
-/// 2. Verifies SHA-256.
-/// 3. Backs up current binary.
-/// 4. Writes the state file.
-/// 5. Atomically replaces the binary.
-///
-/// The caller is responsible for restarting the process after this returns `Ok`.
+/// Download, verify, and replace the current binary. Caller must restart after success.
 pub async fn execute(
     artifact_url: &str,
     expected_sha256: &str,
@@ -94,7 +65,6 @@ pub async fn execute(
         "starting self-upgrade",
     );
 
-    // 1. Download artifact to temp file.
     let resp = http_client.get(artifact_url).send().await?;
     if !resp.status().is_success() {
         return Err(crate::Error::Transport(format!(
@@ -104,7 +74,6 @@ pub async fn execute(
     }
     let bytes = resp.bytes().await?;
 
-    // 2. Verify SHA-256.
     let actual_sha256 = hex::encode(Sha256::digest(&bytes));
     if actual_sha256 != expected_sha256 {
         return Err(crate::Error::Sha256Mismatch {
@@ -114,7 +83,6 @@ pub async fn execute(
     }
     info!("SHA-256 verified");
 
-    // 3. Determine paths.
     let current_exe = std::env::current_exe().map_err(|e| {
         crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -123,11 +91,9 @@ pub async fn execute(
     })?;
     let backup_path = data_dir.join(format!("vasal.{current_version}.bak"));
 
-    // 4. Backup current binary.
     std::fs::copy(&current_exe, &backup_path)?;
     info!(backup = %backup_path.display(), "backed up current binary");
 
-    // 5. Write state file.
     let state = PendingUpgrade {
         target_version: target_version.to_owned(),
         previous_version: current_version.to_owned(),
@@ -138,11 +104,9 @@ pub async fn execute(
     let state_json = serde_json::to_string_pretty(&state)?;
     std::fs::write(&state_path, state_json)?;
 
-    // 6. Write new binary to a temp location, then atomic rename.
     let new_path = data_dir.join("vasal.new");
     std::fs::write(&new_path, &bytes)?;
 
-    // Set executable permission on Unix.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -150,7 +114,6 @@ pub async fn execute(
         std::fs::set_permissions(&new_path, perms)?;
     }
 
-    // Atomic replace.
     std::fs::rename(&new_path, &current_exe)?;
     info!("binary replaced — restart required to complete upgrade");
 
@@ -209,8 +172,6 @@ mod tests {
         let result = check_pending(dir.path()).unwrap();
         assert_eq!(result.target_version, "0.2.0");
         assert_eq!(result.previous_version, "0.1.0");
-
-        // File should be consumed.
         assert!(!path.exists());
     }
 
@@ -221,7 +182,6 @@ mod tests {
         std::fs::write(&path, "not json").unwrap();
 
         assert!(check_pending(dir.path()).is_none());
-        // File should be removed.
         assert!(!path.exists());
     }
 }

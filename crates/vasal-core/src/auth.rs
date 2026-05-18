@@ -1,53 +1,45 @@
-//! Token persistence and refresh logic.
-//!
-//! The token store holds an access token and a refresh token. The access token
-//! is short-lived; the refresh token is long-lived and used to obtain new
-//! access tokens.
+//! Authentication — bootstrap and token management.
 
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{info, warn};
 
-/// Response from the auth provider's token endpoint.
+// ─── Token types ────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenResponse {
     pub access_token: String,
     #[serde(default)]
     pub refresh_token: Option<String>,
-    /// Token lifetime in seconds.
     #[serde(default)]
     pub expires_in: Option<u64>,
-    /// Token type (e.g., "Bearer").
     #[serde(default)]
     pub token_type: Option<String>,
 }
 
-/// Persisted token pair.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedTokens {
     access_token: String,
     refresh_token: Option<String>,
-    /// Unix epoch in seconds when the access token expires.
     expires_at: Option<u64>,
 }
 
-/// Thread-safe token store with interior mutability.
+// ─── TokenStore ─────────────────────────────────────────────────────────────
+
 #[derive(Clone)]
 pub struct TokenStore {
     inner: Arc<RwLock<Option<PersistedTokens>>>,
 }
 
 impl TokenStore {
-    /// Create an empty token store (no authentication).
     pub fn empty() -> Self {
         Self {
             inner: Arc::new(RwLock::new(None)),
         }
     }
 
-    /// Create a token store from an auth provider response.
     pub fn from_response(resp: TokenResponse) -> Self {
         let expires_at = resp.expires_in.map(|secs| {
             std::time::SystemTime::now()
@@ -66,7 +58,6 @@ impl TokenStore {
         }
     }
 
-    /// Load tokens from a file.
     pub fn load(path: &Path) -> Option<Self> {
         let content = std::fs::read_to_string(path).ok()?;
         let tokens: PersistedTokens = serde_json::from_str(&content).ok()?;
@@ -75,17 +66,14 @@ impl TokenStore {
         })
     }
 
-    /// Persist tokens to a file.
     pub fn save(&self, path: &Path) -> crate::Result<()> {
         let guard = self.inner.read().unwrap();
         if let Some(tokens) = guard.as_ref() {
             let json = serde_json::to_string_pretty(tokens)?;
-            // Ensure parent directory exists.
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::write(path, json)?;
-            // Restrict token file permissions to owner-only (0600).
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -98,26 +86,24 @@ impl TokenStore {
         Ok(())
     }
 
-    /// Get the current access token, if available and not obviously expired.
+    /// Get the current access token if available and not expired.
     pub fn access_token(&self) -> Option<String> {
         let guard = self.inner.read().unwrap();
         let tokens = guard.as_ref()?;
 
-        // Check rough expiry (with 30s buffer).
         if let Some(expires_at) = tokens.expires_at {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
             if now + 30 >= expires_at {
-                return None; // Expired or about to expire.
+                return None;
             }
         }
 
         Some(tokens.access_token.clone())
     }
 
-    /// Refresh the access token using the stored refresh token.
     pub async fn refresh(
         &self,
         auth_provider_url: &str,
@@ -169,6 +155,120 @@ impl TokenStore {
     }
 }
 
+// ─── AuthManager ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct BootstrapConfig {
+    bootstrap: BootstrapKey,
+}
+
+#[derive(Debug, Deserialize)]
+struct BootstrapKey {
+    key: String,
+    #[allow(dead_code)]
+    auth_endpoint: String,
+}
+
+#[derive(Clone)]
+pub struct AuthManager {
+    token_store: TokenStore,
+}
+
+impl AuthManager {
+    /// Load existing tokens or bootstrap from one-time key.
+    pub async fn init(
+        token_file: &Path,
+        auth_provider_url: &str,
+        http_client: &reqwest::Client,
+    ) -> crate::Result<Self> {
+        if let Some(store) = TokenStore::load(token_file) {
+            info!("loaded existing auth tokens");
+            return Ok(Self { token_store: store });
+        }
+
+        let bootstrap_path = token_file
+            .parent()
+            .unwrap_or(Path::new("/etc/vasal"))
+            .join("onetimeauth.toml");
+
+        if bootstrap_path.exists() {
+            info!(path = %bootstrap_path.display(), "bootstrapping from one-time key");
+            let store = Self::bootstrap(&bootstrap_path, auth_provider_url, http_client).await?;
+            store.save(token_file)?;
+            if let Err(e) = std::fs::remove_file(&bootstrap_path) {
+                warn!(error = %e, "failed to remove one-time key file");
+            }
+            return Ok(Self { token_store: store });
+        }
+
+        warn!("no auth tokens or bootstrap key found — running unauthenticated");
+        Ok(Self {
+            token_store: TokenStore::empty(),
+        })
+    }
+
+    async fn bootstrap(
+        bootstrap_path: &Path,
+        auth_provider_url: &str,
+        http_client: &reqwest::Client,
+    ) -> crate::Result<TokenStore> {
+        let content = std::fs::read_to_string(bootstrap_path).map_err(|e| {
+            crate::Error::Auth(format!(
+                "failed to read bootstrap config {}: {e}",
+                bootstrap_path.display(),
+            ))
+        })?;
+        let config: BootstrapConfig = toml::from_str(&content)
+            .map_err(|e| crate::Error::Auth(format!("failed to parse bootstrap config: {e}",)))?;
+
+        let resp = http_client
+            .post(auth_provider_url)
+            .json(&serde_json::json!({
+                "grant_type": "one_time_key",
+                "key": config.bootstrap.key,
+            }))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(crate::Error::Auth(format!(
+                "bootstrap auth returned HTTP {}",
+                resp.status(),
+            )));
+        }
+
+        let body: TokenResponse = resp.json().await?;
+        info!("bootstrap successful — tokens received");
+
+        Ok(TokenStore::from_response(body))
+    }
+
+    /// Inject `Authorization: Bearer` header if a valid token is available.
+    pub fn apply_auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(token) = self.token_store.access_token() {
+            builder.bearer_auth(token)
+        } else {
+            builder
+        }
+    }
+
+    pub fn access_token(&self) -> Option<String> {
+        self.token_store.access_token()
+    }
+
+    pub async fn refresh(
+        &self,
+        auth_provider_url: &str,
+        http_client: &reqwest::Client,
+    ) -> crate::Result<()> {
+        self.token_store
+            .refresh(auth_provider_url, http_client)
+            .await
+    }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,7 +314,7 @@ mod tests {
             inner: Arc::new(RwLock::new(Some(PersistedTokens {
                 access_token: "expired".into(),
                 refresh_token: None,
-                expires_at: Some(0), // Expired in 1970.
+                expires_at: Some(0),
             }))),
         };
         assert!(store.access_token().is_none());

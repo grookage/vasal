@@ -1,7 +1,4 @@
-//! HTTP poll transport — task fetch and result reporting (DD-02).
-//!
-//! The agent periodically GETs pending tasks from the CP's HTTP API and
-//! POSTs task results back. Simple, firewall-friendly, works everywhere.
+//! HTTP poll transport for task fetch and result reporting.
 
 use std::time::Duration;
 
@@ -11,7 +8,6 @@ use vasal_protocol::task::{Task, TaskChain, TaskResult};
 
 use super::{ReceivedWork, Transport};
 
-/// HTTP poll transport implementation.
 pub struct PollTransport {
     endpoint: String,
     http_client: reqwest::Client,
@@ -19,7 +15,6 @@ pub struct PollTransport {
 }
 
 impl PollTransport {
-    /// Create a new poll transport.
     pub fn new(endpoint: String, http_client: reqwest::Client, poll_interval_sec: u64) -> Self {
         Self {
             endpoint,
@@ -32,7 +27,6 @@ impl PollTransport {
 #[async_trait]
 impl Transport for PollTransport {
     async fn recv_tasks(&self) -> crate::Result<Vec<ReceivedWork>> {
-        // Wait for the poll interval.
         tokio::time::sleep(self.poll_interval).await;
 
         let url = format!("{}/tasks/pending", self.endpoint);
@@ -45,18 +39,15 @@ impl Transport for PollTransport {
             )));
         }
 
-        // The CP returns a JSON array of tasks and/or chains.
         let body = resp.text().await?;
         if body.trim().is_empty() || body.trim() == "[]" {
             return Ok(vec![]);
         }
 
-        // Try parsing as an array of tasks.
         let items: Vec<serde_json::Value> = serde_json::from_str(&body)?;
         let mut work = Vec::new();
 
         for item in items {
-            // Check if it's a chain (has "steps" field) or a single task.
             if item.get("steps").is_some() {
                 match serde_json::from_value::<TaskChain>(item.clone()) {
                     Ok(chain) => work.push(ReceivedWork::Chain(chain)),

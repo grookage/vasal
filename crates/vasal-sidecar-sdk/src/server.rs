@@ -1,21 +1,4 @@
 //! Unix domain socket server for sidecar IPC.
-//!
-//! [`SidecarServer`] binds to a Unix socket, accepts connections from the
-//! Vasal agent, and dispatches JSON-RPC 2.0 requests to a [`SidecarHandler`].
-//!
-//! # Connection Model
-//!
-//! The agent connects per-request — each connection carries exactly one
-//! request/response pair. Unix socket connect is ~50 us, so there is no
-//! need for persistent connections or multiplexing.
-//!
-//! # Lifecycle
-//!
-//! 1. Remove any stale socket file from a prior run.
-//! 2. Bind and listen.
-//! 3. For each connection: read one frame, parse JSON-RPC, dispatch, respond.
-//! 4. On shutdown signal: stop accepting, finish in-flight requests, remove
-//!    the socket file.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -51,10 +34,6 @@ pub struct SidecarServer<H> {
 }
 
 impl<H: SidecarHandler> SidecarServer<H> {
-    /// Create a new server bound to the given socket path.
-    ///
-    /// The handler is wrapped in an `Arc` internally and shared across
-    /// all connection tasks.
     pub fn new(handler: H, socket_path: impl Into<PathBuf>) -> Self {
         Self {
             handler: Arc::new(handler),
@@ -63,11 +42,6 @@ impl<H: SidecarHandler> SidecarServer<H> {
     }
 
     /// Run the server until the `shutdown` future resolves.
-    ///
-    /// - Removes any stale socket file before binding.
-    /// - Cleans up the socket file on shutdown.
-    /// - In-flight connections are allowed to finish (they hold an `Arc` to
-    ///   the handler).
     pub async fn run(
         &self,
         shutdown: impl std::future::Future<Output = ()> + Send,
@@ -85,8 +59,6 @@ impl<H: SidecarHandler> SidecarServer<H> {
 
         loop {
             tokio::select! {
-                biased;
-
                 () = &mut shutdown => {
                     info!(sidecar = self.handler.name(), "shutting down");
                     break;
@@ -115,17 +87,12 @@ impl<H: SidecarHandler> SidecarServer<H> {
     }
 }
 
-// ── Connection handler ─────────────────────────────────────────────────────
-
-/// Handle a single agent connection: read one request, dispatch, write one
-/// response, close.
 async fn handle_connection<H: SidecarHandler>(
     handler: Arc<H>,
     stream: UnixStream,
 ) -> std::io::Result<()> {
     let mut framed = Framed::new(stream, LengthPrefixCodec::new());
 
-    // Read exactly one frame.
     let frame = match framed.next().await {
         Some(Ok(f)) => f,
         Some(Err(e)) => return Err(e),
@@ -135,7 +102,6 @@ async fn handle_connection<H: SidecarHandler>(
         }
     };
 
-    // Parse JSON-RPC envelope.
     let request: Request = match serde_json::from_slice(&frame) {
         Ok(r) => r,
         Err(e) => {
@@ -147,7 +113,6 @@ async fn handle_connection<H: SidecarHandler>(
         }
     };
 
-    // Validate protocol version.
     if request.jsonrpc != jsonrpc::JSONRPC_VERSION {
         let resp = Response::error(
             request.id.clone(),
@@ -172,27 +137,21 @@ async fn handle_connection<H: SidecarHandler>(
     send_response(&mut framed, &response).await
 }
 
-// ── Dispatch ───────────────────────────────────────────────────────────────
-
-/// Route a parsed JSON-RPC request to the appropriate [`SidecarHandler`] method.
 async fn dispatch<H: SidecarHandler>(handler: &H, request: &Request) -> Response {
     let id = request.id.clone();
     let params = request.params.clone().unwrap_or(serde_json::Value::Null);
 
     match request.method.as_str() {
-        // ── health ─────────────────────────────────────────────────────
         "health" => {
             let result = handler.health().await;
             to_success_or_internal_error(id, &result)
         }
 
-        // ── submit ─────────────────────────────────────────────────────
         "submit" => match handler.submit(params).await {
             Ok(result) => to_success_or_internal_error(id, &result),
             Err(e) => Response::error(id, e.into()),
         },
 
-        // ── status ─────────────────────────────────────────────────────
         "status" => {
             let task_id = match extract_task_id(&params) {
                 Ok(tid) => tid,
@@ -204,7 +163,6 @@ async fn dispatch<H: SidecarHandler>(handler: &H, request: &Request) -> Response
             }
         }
 
-        // ── cancel ─────────────────────────────────────────────────────
         "cancel" => {
             let task_id = match extract_task_id(&params) {
                 Ok(tid) => tid,
@@ -216,15 +174,10 @@ async fn dispatch<H: SidecarHandler>(handler: &H, request: &Request) -> Response
             }
         }
 
-        // ── unknown method ─────────────────────────────────────────────
         other => Response::error(id, ProtocolError::method_not_found(other).into()),
     }
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-/// Serialize a result value into a success response, falling back to an
-/// internal error if serialization fails.
 fn to_success_or_internal_error<T: serde::Serialize>(id: RequestId, value: &T) -> Response {
     match serde_json::to_value(value) {
         Ok(v) => Response::success(id, v),
@@ -235,9 +188,7 @@ fn to_success_or_internal_error<T: serde::Serialize>(id: RequestId, value: &T) -
     }
 }
 
-/// Extract the `task_id` string from a `status` or `cancel` params object.
 fn extract_task_id(params: &serde_json::Value) -> Result<String, ErrorResponse> {
-    // Accept either StatusParams or CancelParams — both have `task_id`.
     #[derive(serde::Deserialize)]
     struct TaskIdParam {
         task_id: String,
@@ -250,7 +201,6 @@ fn extract_task_id(params: &serde_json::Value) -> Result<String, ErrorResponse> 
     }
 }
 
-/// A deferred error response that needs a [`RequestId`] attached.
 struct ErrorResponse(ErrorObject);
 
 impl ErrorResponse {
@@ -259,7 +209,6 @@ impl ErrorResponse {
     }
 }
 
-/// Serialize and send a JSON-RPC response over the framed connection.
 async fn send_response(
     framed: &mut Framed<UnixStream, LengthPrefixCodec>,
     response: &Response,
@@ -269,7 +218,6 @@ async fn send_response(
     framed.send(Bytes::from(payload)).await
 }
 
-/// Remove a socket file if it exists.
 fn cleanup_socket(path: &Path) {
     if path.exists() {
         if let Err(e) = std::fs::remove_file(path) {
@@ -285,7 +233,6 @@ mod tests {
     use async_trait::async_trait;
     use vasal_protocol::sidecar::{HealthResponse, HealthStatus, SubmitResponse};
 
-    /// Minimal test handler that echoes submit params.
     struct TestHandler;
 
     #[async_trait]
@@ -313,7 +260,6 @@ mod tests {
         }
     }
 
-    /// Spin up a server on a temp socket, send one request, return the response.
     async fn roundtrip(request: &Request) -> Response {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("test.sock");
@@ -331,10 +277,8 @@ mod tests {
             }
         });
 
-        // Give the server a moment to bind.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        // Connect and send request.
         let stream = UnixStream::connect(&sock).await.unwrap();
         let mut framed = Framed::new(stream, LengthPrefixCodec::new());
 
@@ -419,7 +363,6 @@ mod tests {
         let stream = UnixStream::connect(&sock).await.unwrap();
         let mut framed = Framed::new(stream, LengthPrefixCodec::new());
 
-        // Send garbage bytes.
         framed
             .send(Bytes::from_static(b"this is not json"))
             .await

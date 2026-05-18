@@ -1,9 +1,4 @@
-//! Unit management — install, upgrade, health, remove (DD-04, DD-17).
-//!
-//! A **managed unit** is either a sidecar (with IPC) or a package (without IPC).
-//! This module orchestrates the unit lifecycle: downloading artifacts,
-//! verifying integrity, installing, starting, health-checking, upgrading
-//! with rollback, and removing.
+//! Unit lifecycle management — install, upgrade, health, remove.
 
 pub mod health;
 pub mod install;
@@ -15,7 +10,6 @@ use vasal_protocol::unit::{ManagedUnit, UnitKind, UnitState};
 
 use crate::state::UnitRow;
 
-/// Convert a protocol `ManagedUnit` to a state store row.
 pub fn unit_to_row(unit: &ManagedUnit) -> UnitRow {
     UnitRow {
         name: unit.name.clone(),
@@ -43,7 +37,6 @@ pub fn unit_to_row(unit: &ManagedUnit) -> UnitRow {
     }
 }
 
-/// Get the socket path for a sidecar unit.
 pub fn socket_path_for(socket_dir: &Path, unit_name: &str) -> PathBuf {
     socket_dir.join(format!("{unit_name}.sock"))
 }

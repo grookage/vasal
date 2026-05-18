@@ -1,11 +1,4 @@
-//! Continuous task executor (DD-07).
-//!
-//! A continuous task executes the same action at a fixed interval until the
-//! CP cancels it or the agent shuts down. Every tick produces a `TaskResult`
-//! that is recorded in the journal and forwarded to the CP.
-//!
-//! Continuous tasks are used for observation (e.g., periodic health snapshots
-//! from sidecars), monitoring, and any repeating work.
+//! Continuous task executor — repeating work at a fixed interval until cancelled.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -18,10 +11,6 @@ use super::router::make_result;
 use crate::credential::ResolvedCredentials;
 use crate::state::StateStore;
 
-/// Run a continuous task until cancellation or shutdown.
-///
-/// Returns the last result produced. Intermediate results are recorded in
-/// the journal (by the caller) on each tick.
 pub async fn run(
     exec: &ExecTask,
     http_client: &reqwest::Client,
@@ -34,11 +23,7 @@ pub async fn run(
     let interval_ms = exec.interval_ms.unwrap_or(30_000);
     let interval = Duration::from_millis(interval_ms);
 
-    info!(
-        task_id = %task_id,
-        interval_ms,
-        "continuous task started",
-    );
+    info!(task_id = %task_id, interval_ms, "continuous task started");
 
     let mut last_result = make_result(
         task_id,
@@ -51,9 +36,7 @@ pub async fn run(
     );
 
     loop {
-        // Wait for the next tick, cancellation, or shutdown.
         tokio::select! {
-            biased;
             () = cancel.cancelled() => {
                 info!(task_id = %task_id, "continuous task cancelled");
                 return make_result(
@@ -73,10 +56,8 @@ pub async fn run(
             () = tokio::time::sleep(interval) => {}
         }
 
-        // Execute one tick.
         let tick_start = Instant::now();
 
-        // Re-resolve credentials each tick (they may have rotated).
         let creds = match crate::credential::resolve_eager(
             &exec.credentials,
             http_client,
@@ -96,7 +77,6 @@ pub async fn run(
                     tick_start.elapsed(),
                     Some(e.to_string()),
                 );
-                // Record the tick failure but continue the loop.
                 record_tick(store, &last_result);
                 continue;
             }
@@ -117,7 +97,6 @@ pub async fn run(
     }
 }
 
-/// Execute a single tick of a continuous task.
 async fn execute_tick(
     exec: &ExecTask,
     creds: &ResolvedCredentials,
@@ -145,7 +124,6 @@ async fn execute_tick(
     }
 }
 
-/// Record a continuous tick result in the task journal.
 fn record_tick(store: &StateStore, result: &TaskResult) {
     let row = crate::state::TaskResultRow {
         task_id: result.task_id.to_string(),
@@ -181,7 +159,7 @@ mod tests {
             target: None,
             method: None,
             payload: json!({"script": "echo tick"}),
-            interval_ms: Some(50), // 50ms ticks for fast test.
+            interval_ms: Some(50),
             timeout_ms: 5000,
             credentials: vec![],
         };
@@ -193,7 +171,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let cancel_clone = cancel.clone();
-        // Cancel after a few ticks.
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(180)).await;
             cancel_clone.cancel();

@@ -1,7 +1,4 @@
 //! Integration tests for vasal-core.
-//!
-//! These tests exercise the public API from an external crate perspective,
-//! including end-to-end sidecar IPC with the real `echo-ctrl` binary.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,8 +14,6 @@ use vasal_core::state::StateStore;
 use vasal_core::task::TaskManager;
 use vasal_protocol::heartbeat::ActiveTaskCounts;
 use vasal_protocol::task::*;
-
-// ── Helpers ────────────────────────────────────────────────────────────────
 
 fn default_runtime_config() -> RuntimeConfig {
     RuntimeConfig {
@@ -67,12 +62,7 @@ fn echo_ctrl_binary() -> PathBuf {
     workspace_root().join("target/debug/echo-ctrl")
 }
 
-/// Build and spawn the `echo-ctrl` sidecar, returning the child process.
-///
-/// Panics if the binary cannot be built or the socket does not appear
-/// within 5 seconds.
 async fn spawn_echo_ctrl(socket_path: &Path) -> tokio::process::Child {
-    // Build echo-ctrl if the binary is missing.
     if !echo_ctrl_binary().exists() {
         let status = tokio::process::Command::new("cargo")
             .args(["build", "-p", "echo-ctrl"])
@@ -94,7 +84,6 @@ async fn spawn_echo_ctrl(socket_path: &Path) -> tokio::process::Child {
             )
         });
 
-    // Wait for the socket to appear (poll with timeout).
     for _ in 0..100 {
         if socket_path.exists() {
             return child;
@@ -107,10 +96,6 @@ async fn spawn_echo_ctrl(socket_path: &Path) -> tokio::process::Child {
     );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Shell Execution
-// ═══════════════════════════════════════════════════════════════════════════
-
 #[tokio::test]
 async fn shell_task_success() {
     let exec = make_exec("echo integration_test");
@@ -122,9 +107,15 @@ async fn shell_task_success() {
     assert_eq!(result.status, TaskResultStatus::Success);
     assert_eq!(result.exit_code, Some(0));
     assert_eq!(result.stdout.trim(), "integration_test");
-    // duration_ms is a u64 — always non-negative; just verify the field is populated.
-    let _ = result.duration_ms;
     assert_eq!(result.task_id, exec.id);
+
+    // Also verify multiline output handling while we're here
+    let exec2 = make_exec("printf 'line1\\nline2\\nline3'");
+    let result2 =
+        vasal_core::task::shell::execute(&exec2, &HashMap::new(), CancellationToken::new()).await;
+    assert_eq!(result2.status, TaskResultStatus::Success);
+    let lines: Vec<&str> = result2.stdout.lines().collect();
+    assert_eq!(lines, vec!["line1", "line2", "line3"]);
 }
 
 #[tokio::test]
@@ -146,7 +137,7 @@ async fn shell_task_timeout() {
         vasal_core::task::shell::execute(&exec, &HashMap::new(), CancellationToken::new()).await;
 
     assert_eq!(result.status, TaskResultStatus::Timeout);
-    assert!(result.error.is_some());
+    assert!(result.error.is_some(), "timeout should populate error field");
 }
 
 #[tokio::test]
@@ -164,14 +155,15 @@ async fn shell_task_cancellation() {
     assert_eq!(result.status, TaskResultStatus::Cancelled);
 }
 
+// regression: used to panic on empty PATH
 #[tokio::test]
 async fn shell_task_credential_injection() {
     let exec = make_exec("echo $SECRET_KEY");
     let mut creds = HashMap::new();
     creds.insert("SECRET_KEY".into(), "hunter2".into());
-    let cancel = CancellationToken::new();
 
-    let result = vasal_core::task::shell::execute(&exec, &creds, cancel).await;
+    let result =
+        vasal_core::task::shell::execute(&exec, &creds, CancellationToken::new()).await;
 
     assert_eq!(result.status, TaskResultStatus::Success);
     assert_eq!(result.stdout.trim(), "hunter2");
@@ -186,21 +178,6 @@ async fn shell_task_stderr_captured() {
     assert_eq!(result.status, TaskResultStatus::Success);
     assert_eq!(result.stderr.trim(), "err_output");
 }
-
-#[tokio::test]
-async fn shell_task_multiline_output() {
-    let exec = make_exec("printf 'line1\\nline2\\nline3'");
-    let result =
-        vasal_core::task::shell::execute(&exec, &HashMap::new(), CancellationToken::new()).await;
-
-    assert_eq!(result.status, TaskResultStatus::Success);
-    let lines: Vec<&str> = result.stdout.lines().collect();
-    assert_eq!(lines, vec!["line1", "line2", "line3"]);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Chain Execution
-// ═══════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
 async fn chain_all_steps_succeed() {
@@ -246,7 +223,6 @@ async fn chain_rollback_all_on_failure() {
     let cancel = CancellationToken::new();
     let client = reqwest::Client::new();
 
-    // Use a marker file to prove rollback for step 0 ran (rollback_all).
     let marker_dir = tempfile::tempdir().unwrap();
     let marker = marker_dir.path().join("rollback_step0_ran");
 
@@ -264,13 +240,10 @@ async fn chain_rollback_all_on_failure() {
     let results =
         vasal_core::task::chain::execute(&chain, &client, socket_dir.path(), &store, cancel).await;
 
-    // Step 1 succeeded, step 2 failed, step 3 never ran.
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].status, TaskResultStatus::Success);
     assert_eq!(results[1].status, TaskResultStatus::Failed);
 
-    // RollbackAll: both step 1 and step 0's rollback scripts should have run.
-    // Step 0's rollback creates the marker file.
     assert!(
         marker.exists(),
         "rollback_all should have run step 0's rollback (marker file)"
@@ -285,7 +258,6 @@ async fn chain_rollback_failed_only() {
     let cancel = CancellationToken::new();
     let client = reqwest::Client::new();
 
-    // Marker for step 0's rollback — should NOT be created with RollbackFailed.
     let marker_dir = tempfile::tempdir().unwrap();
     let marker = marker_dir.path().join("should_not_exist");
 
@@ -306,17 +278,9 @@ async fn chain_rollback_failed_only() {
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].status, TaskResultStatus::Success);
     assert_eq!(results[1].status, TaskResultStatus::Failed);
-
-    // RollbackFailed: only the failed step's rollback runs — not step 0's.
-    assert!(
-        !marker.exists(),
-        "rollback_failed should NOT have run step 0's rollback"
-    );
+    // Only the failed step's rollback should run, not step 0's
+    assert!(!marker.exists());
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Sidecar IPC (end-to-end with echo-ctrl)
-// ═══════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
 async fn sidecar_health_check() {
@@ -328,7 +292,7 @@ async fn sidecar_health_check() {
         .await
         .expect("health call failed");
 
-    assert!(response.error.is_none(), "health should succeed");
+    assert!(response.error.is_none());
     let result = response.result.unwrap();
     assert_eq!(result["status"], "ok");
     assert!(result["version"].is_string());
@@ -351,7 +315,6 @@ async fn sidecar_submit_echo() {
     let result = response.result.unwrap();
     assert_eq!(result["status"], "completed");
 
-    // echo-ctrl echoes params as pretty-printed JSON in stdout.
     let stdout = result["stdout"].as_str().unwrap();
     let echoed: serde_json::Value = serde_json::from_str(stdout).unwrap();
     assert_eq!(echoed["message"], "hello from integration test");
@@ -386,15 +349,11 @@ async fn sidecar_execute_full_flow() {
     assert_eq!(result.status, TaskResultStatus::Success);
     assert_eq!(result.task_id, task_id);
 
-    // stdout should contain the echoed payload.
     let echoed: serde_json::Value =
         serde_json::from_str(&result.stdout).expect("stdout should be valid JSON");
     assert_eq!(echoed["action"], "discover");
     assert_eq!(echoed["target"], "db-01");
-    assert!(
-        result.duration_ms < 5000,
-        "should complete well within timeout"
-    );
+    assert!(result.duration_ms < 5000);
 
     child.kill().await.ok();
 }
@@ -408,19 +367,11 @@ async fn sidecar_unknown_method_returns_error() {
     let response =
         vasal_core::task::sidecar::call_raw(&socket_path, "nonexistent_method", None).await;
 
-    // The SDK returns a JSON-RPC error for unknown methods.
     let resp = response.expect("should still get a response");
-    assert!(
-        resp.error.is_some(),
-        "unknown method should return a JSON-RPC error"
-    );
+    assert!(resp.error.is_some(), "unknown method should return an error");
 
     child.kill().await.ok();
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// TaskManager — full submit lifecycle
-// ═══════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
 async fn task_manager_shell_submit_and_journal() {
@@ -447,29 +398,22 @@ async fn task_manager_shell_submit_and_journal() {
     let task_id = exec.id;
     manager.submit(Task::Exec(exec)).await.unwrap();
 
-    // Wait for the spawned task to complete.
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // Verify audit events were recorded for this task.
     let events = store.pending_audit_events(100).unwrap();
     let task_events: Vec<_> = events
         .iter()
         .filter(|e| e.task_id.as_deref() == Some(&task_id.to_string()))
         .collect();
-    assert!(
-        !task_events.is_empty(),
-        "audit events should reference the submitted task"
-    );
+    assert!(!task_events.is_empty());
 
-    // There should be at least a "task.received" event.
     let has_received = task_events.iter().any(|e| e.event_type == "task.received");
     assert!(has_received, "should have a task.received audit event");
 
-    // And a terminal event (task.completed or task.failed).
     let has_terminal = task_events
         .iter()
         .any(|e| e.event_type == "task.completed" || e.event_type == "task.failed");
-    assert!(has_terminal, "should have a terminal audit event");
+    assert!(has_terminal);
 }
 
 #[tokio::test]
@@ -493,16 +437,13 @@ async fn task_manager_cancel_running_task() {
         shutdown,
     );
 
-    // Submit a long-running task.
     let mut exec = make_exec("sleep 60");
     let task_id = exec.id;
     exec.timeout_ms = 60_000;
     manager.submit(Task::Exec(exec)).await.unwrap();
 
-    // Give the task time to start.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    // Cancel it.
     let cancel_task = Task::Cancel(CancelTask {
         id: Uuid::new_v4(),
         priority: Priority::Normal,
@@ -511,10 +452,8 @@ async fn task_manager_cancel_running_task() {
     });
     manager.submit(cancel_task).await.unwrap();
 
-    // Wait for cancellation to take effect.
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // Verify a task.cancelled audit event exists.
     let events = store.pending_audit_events(100).unwrap();
     let cancelled = events.iter().any(|e| {
         e.event_type == "task.cancelled" && e.task_id.as_deref() == Some(&task_id.to_string())
@@ -563,31 +502,21 @@ async fn task_manager_sidecar_submit() {
 
     manager.submit(Task::Exec(exec)).await.unwrap();
 
-    // Wait for the spawned task to complete.
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // Verify audit events.
     let events = store.pending_audit_events(100).unwrap();
     let has_completed = events.iter().any(|e| {
         e.event_type == "task.completed" && e.task_id.as_deref() == Some(&task_id.to_string())
     });
-    assert!(
-        has_completed,
-        "sidecar task should have a task.completed audit event"
-    );
+    assert!(has_completed);
 
     child.kill().await.ok();
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// State Store — persistence across reopens
-// ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn state_store_persists_across_reopens() {
     let dir = tempfile::tempdir().unwrap();
 
-    // Write data, then drop the store.
     {
         let store = StateStore::open(dir.path()).unwrap();
         store
@@ -620,7 +549,6 @@ fn state_store_persists_across_reopens() {
             .unwrap();
     }
 
-    // Reopen and verify all data survived.
     {
         let store = StateStore::open(dir.path()).unwrap();
         let unit = store
@@ -632,7 +560,6 @@ fn state_store_persists_across_reopens() {
         assert_eq!(unit.state, "running");
         assert_eq!(unit.config_json.as_deref(), Some(r#"{"key":"value"}"#));
 
-        // Verify the data_dir accessor works.
         assert_eq!(store.data_dir_or_default(), dir.path());
     }
 }
@@ -661,7 +588,6 @@ fn state_store_unit_list_and_remove() {
 
     let units = store.list_units().unwrap();
     assert_eq!(units.len(), 3);
-    // Ordered by name.
     assert_eq!(units[0].name, "alpha");
     assert_eq!(units[2].name, "gamma");
 
@@ -670,10 +596,6 @@ fn state_store_unit_list_and_remove() {
     assert_eq!(units.len(), 2);
     assert!(store.get_unit("beta").unwrap().is_none());
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Config — file load and runtime extraction
-// ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn config_load_from_toml_file() {
@@ -734,20 +656,14 @@ fn config_load_invalid_toml_returns_error() {
     let path = dir.path().join("bad.toml");
     std::fs::write(&path, "this is not valid toml [[[").unwrap();
 
-    let result = vasal_core::config::Config::load(&path);
-    assert!(result.is_err());
+    assert!(vasal_core::config::Config::load(&path).is_err());
 }
 
 #[test]
 fn config_load_missing_file_returns_error() {
     let path = PathBuf::from("/tmp/vasal-nonexistent-config.toml");
-    let result = vasal_core::config::Config::load(&path);
-    assert!(result.is_err());
+    assert!(vasal_core::config::Config::load(&path).is_err());
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Audit Trail
-// ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn audit_record_and_retrieve() {
@@ -794,11 +710,9 @@ fn audit_mark_forwarded() {
     let events = store.pending_audit_events(100).unwrap();
     assert_eq!(events.len(), 5);
 
-    // Mark first 3 as forwarded.
     let ids: Vec<i64> = events.iter().take(3).filter_map(|e| e.id).collect();
     store.mark_forwarded(&ids).unwrap();
 
-    // Only 2 should remain pending.
     let remaining = store.pending_audit_events(100).unwrap();
     assert_eq!(remaining.len(), 2);
 }
@@ -808,7 +722,6 @@ fn audit_journal_prune() {
     let dir = tempfile::tempdir().unwrap();
     let store = StateStore::open(dir.path()).unwrap();
 
-    // Insert 20 journal entries.
     for i in 0..20 {
         store
             .record_task_result(&vasal_core::state::TaskResultRow {
@@ -825,7 +738,6 @@ fn audit_journal_prune() {
             .unwrap();
     }
 
-    // Prune to keep 5.
     let deleted = store.prune_journal(5).unwrap();
     assert_eq!(deleted, 15);
 }
