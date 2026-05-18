@@ -95,8 +95,7 @@ pub async fn run(
                 updated.updated_at = crate::state::now_ms();
 
                 let s = store.clone();
-                let _ =
-                    tokio::task::spawn_blocking(move || s.upsert_unit(&updated)).await;
+                let _ = tokio::task::spawn_blocking(move || s.upsert_unit(&updated)).await;
             }
         }
     }

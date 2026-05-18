@@ -100,11 +100,20 @@ async fn extract_artifact(
             let artifact_str = artifact_path.to_string_lossy();
 
             let (cmd, args) = if cmd_parts[0] == "tar" {
-                (cmd_parts[0], vec![cmd_parts[1], &artifact_str, "-C", &install_dir_str])
+                (
+                    cmd_parts[0],
+                    vec![cmd_parts[1], &artifact_str, "-C", &install_dir_str],
+                )
             } else if cmd_parts[0] == "unzip" {
-                (cmd_parts[0], vec![cmd_parts[1], &artifact_str, "-d", &install_dir_str])
+                (
+                    cmd_parts[0],
+                    vec![cmd_parts[1], &artifact_str, "-d", &install_dir_str],
+                )
             } else {
-                (cmd_parts[0], vec![cmd_parts[1], &artifact_str, &install_dir_str])
+                (
+                    cmd_parts[0],
+                    vec![cmd_parts[1], &artifact_str, &install_dir_str],
+                )
             };
 
             return run_extract(cmd, &args, unit_name).await;

@@ -45,8 +45,8 @@ pub async fn upgrade(
     let name = unit_name.to_owned();
     let current = tokio::task::spawn_blocking(move || s.get_unit(&name)).await??;
 
-    let current = current
-        .ok_or_else(|| crate::Error::Unit(format!("unit not found: {unit_name}")))?;
+    let current =
+        current.ok_or_else(|| crate::Error::Unit(format!("unit not found: {unit_name}")))?;
 
     if let Some(pid) = current.pid {
         info!(unit = %unit_name, pid, "stopping current version");

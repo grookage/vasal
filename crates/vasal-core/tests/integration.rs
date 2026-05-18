@@ -137,7 +137,10 @@ async fn shell_task_timeout() {
         vasal_core::task::shell::execute(&exec, &HashMap::new(), CancellationToken::new()).await;
 
     assert_eq!(result.status, TaskResultStatus::Timeout);
-    assert!(result.error.is_some(), "timeout should populate error field");
+    assert!(
+        result.error.is_some(),
+        "timeout should populate error field"
+    );
 }
 
 #[tokio::test]
@@ -162,8 +165,7 @@ async fn shell_task_credential_injection() {
     let mut creds = HashMap::new();
     creds.insert("SECRET_KEY".into(), "hunter2".into());
 
-    let result =
-        vasal_core::task::shell::execute(&exec, &creds, CancellationToken::new()).await;
+    let result = vasal_core::task::shell::execute(&exec, &creds, CancellationToken::new()).await;
 
     assert_eq!(result.status, TaskResultStatus::Success);
     assert_eq!(result.stdout.trim(), "hunter2");
@@ -368,7 +370,10 @@ async fn sidecar_unknown_method_returns_error() {
         vasal_core::task::sidecar::call_raw(&socket_path, "nonexistent_method", None).await;
 
     let resp = response.expect("should still get a response");
-    assert!(resp.error.is_some(), "unknown method should return an error");
+    assert!(
+        resp.error.is_some(),
+        "unknown method should return an error"
+    );
 
     child.kill().await.ok();
 }

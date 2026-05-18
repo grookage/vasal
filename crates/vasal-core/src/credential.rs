@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn filter_lazy_credentials() {
-        let refs = vec![
+        let refs = [
             CredentialRef {
                 name: "DB_PASS".into(),
                 resolve: ResolveMode::Eager,

@@ -146,9 +146,7 @@ async fn run_rollbacks(
         RollbackStrategy::RollbackFailed => {
             vec![failed_step_idx]
         }
-        RollbackStrategy::RollbackAll => {
-            (0..=failed_step_idx).rev().collect()
-        }
+        RollbackStrategy::RollbackAll => (0..=failed_step_idx).rev().collect(),
     };
 
     for idx in rollback_range {

@@ -144,8 +144,7 @@ impl TaskManager {
 
             let journal_row = result_to_journal_row(&result);
             let s = store.clone();
-            let _ =
-                tokio::task::spawn_blocking(move || s.record_task_result(&journal_row)).await;
+            let _ = tokio::task::spawn_blocking(move || s.record_task_result(&journal_row)).await;
 
             let event_type = match result.status {
                 vasal_protocol::task::TaskResultStatus::Success => {
@@ -214,8 +213,7 @@ impl TaskManager {
 
             let journal_row = result_to_journal_row(&result);
             let s = store.clone();
-            let _ =
-                tokio::task::spawn_blocking(move || s.record_task_result(&journal_row)).await;
+            let _ = tokio::task::spawn_blocking(move || s.record_task_result(&journal_row)).await;
 
             if let Some(tx) = &result_tx {
                 let _ = tx.send(result).await;

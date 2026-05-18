@@ -53,19 +53,40 @@ impl Metrics {
 
         const COUNTERS: &[(&str, &str)] = &[
             ("vasal_tasks_received_total", "Total tasks received"),
-            ("vasal_tasks_succeeded_total", "Total tasks completed successfully"),
+            (
+                "vasal_tasks_succeeded_total",
+                "Total tasks completed successfully",
+            ),
             ("vasal_tasks_failed_total", "Total tasks failed"),
             ("vasal_tasks_cancelled_total", "Total tasks cancelled"),
             ("vasal_tasks_timed_out_total", "Total tasks timed out"),
             ("vasal_sidecar_calls_total", "Total sidecar IPC calls"),
-            ("vasal_sidecar_call_failures_total", "Total sidecar IPC failures"),
+            (
+                "vasal_sidecar_call_failures_total",
+                "Total sidecar IPC failures",
+            ),
             ("vasal_heartbeats_sent_total", "Total heartbeats sent"),
             ("vasal_heartbeat_failures_total", "Total heartbeat failures"),
-            ("vasal_audit_events_recorded_total", "Total audit events recorded"),
-            ("vasal_audit_events_forwarded_total", "Total audit events forwarded"),
-            ("vasal_credential_resolutions_total", "Total credential resolutions"),
-            ("vasal_credential_failures_total", "Total credential resolution failures"),
-            ("vasal_config_reloads_total", "Total config reloads via SIGHUP"),
+            (
+                "vasal_audit_events_recorded_total",
+                "Total audit events recorded",
+            ),
+            (
+                "vasal_audit_events_forwarded_total",
+                "Total audit events forwarded",
+            ),
+            (
+                "vasal_credential_resolutions_total",
+                "Total credential resolutions",
+            ),
+            (
+                "vasal_credential_failures_total",
+                "Total credential resolution failures",
+            ),
+            (
+                "vasal_config_reloads_total",
+                "Total config reloads via SIGHUP",
+            ),
         ];
 
         let counter_fields: &[&AtomicU64] = &[
@@ -95,7 +116,10 @@ impl Metrics {
         }
 
         let active = self.active_tasks.load(Ordering::Relaxed);
-        let _ = writeln!(out, "# HELP vasal_active_tasks Number of currently active tasks");
+        let _ = writeln!(
+            out,
+            "# HELP vasal_active_tasks Number of currently active tasks"
+        );
         let _ = writeln!(out, "# TYPE vasal_active_tasks gauge");
         let _ = writeln!(out, "vasal_active_tasks {active}");
 
